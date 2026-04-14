@@ -27,7 +27,7 @@ USER_OWNED_FIELDS = ("title", "priority", "status", "note", "tags")
 
 
 def _utc_now_iso() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def registry_dir() -> Path:

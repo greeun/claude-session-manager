@@ -39,17 +39,35 @@ def projects_dir() -> Path:
 
 
 def decode_project_slug(slug: str) -> str:
-    """Decode a slug like ``-tmp-fake-proj`` → ``fake-proj``.
+    """Decode a Claude Code project slug to a human ``project_name``.
 
-    Rule: strip exactly one leading ``-``, replace remaining ``-`` with
-    ``/``, take basename. If the basename is empty, return the raw slug.
+    Claude Code encodes the absolute project path by replacing every
+    ``/`` with ``-`` (including the leading root slash). This encoding
+    is lossy because a literal ``-`` in the original directory name is
+    indistinguishable from a path separator.
+
+    Heuristic contract (binding for Sprint 1, see sprint_contract.md §2
+    and risk §10.8): strip exactly one leading ``-``, then split on
+    ``-``. If the resulting list has ≤ 3 parts, take the last two parts
+    joined with ``-``; otherwise take the last part. Empty input is
+    returned unchanged.
+
+    Examples:
+      * ``-tmp-fake-proj`` → 3 parts (``tmp``,``fake``,``proj``) → ``fake-proj``
+      * ``-Users-alice-proj-foo`` → 4 parts → ``foo``
+      * ``plainfoo`` → ``plainfoo``
     """
     if not slug:
         return slug
     s = slug[1:] if slug.startswith("-") else slug
-    path = s.replace("-", "/")
-    base = os.path.basename(path)
-    return base if base else slug
+    if not s:
+        return slug
+    parts = s.split("-")
+    if len(parts) <= 1:
+        return parts[0] or slug
+    if len(parts) <= 3:
+        return "-".join(parts[-2:])
+    return parts[-1]
 
 
 def _extract_text(msg_content: Any) -> str | None:
@@ -115,8 +133,10 @@ def _mtime_iso(path: Path) -> str:
     try:
         ts = path.stat().st_mtime
     except OSError:
-        ts = _dt.datetime.utcnow().timestamp()
-    return _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
+    return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 def scan_once() -> dict[str, int]:
