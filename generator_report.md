@@ -155,3 +155,93 @@ e97516a Sprint 1 tests (36 passing) + SKILL.md
 cd037de Sprint 1 core: registry, scanner, hooks, cst CLI, installer
 c0936b3 Sprint 1 kickoff: spec + brainstorm + sprint_contract in place
 ```
+
+## Post-Sprint 1 polish
+
+Applied the two non-blocking polish fixes from `critique.md`.
+
+### Fix 1 — `cst set --status` enum validation
+
+Added enum validation mirroring the existing `--priority` check.
+Allowed values: `in_progress | blocked | waiting | done`. On any
+other value the CLI prints
+`cst: --status must be in_progress|blocked|waiting|done` to stderr,
+exits 1, and does NOT mutate the record.
+
+Code change: `scripts/cst.py` inside `cmd_set`.
+
+New tests in `tests/test_cli.py`:
+
+- `test_set_status_rejects_invalid_value` — asserts exit 1, stderr
+  message, AND the stored `status` + `auto_detected` are unchanged.
+- `test_set_status_accepts_all_valid_values` — parametrized over
+  all four valid values; each must exit 0 and persist.
+
+### Fix 2 — `install.sh` refuses to clobber a regular file
+
+Added an up-front guard before any filesystem mutation. If
+`~/.local/bin/cst` exists and is NOT a symlink, the installer
+prints
+`cst install: <path>/cst exists as a regular file; refusing to overwrite. Remove it or move it aside, then rerun.`
+to stderr, exits 3, and performs no other disk writes (no
+`mkdir`, no symlinks, no `settings.json` creation).
+
+Existing symlinks at that path are still replaced idempotently via
+`ln -sfn`.
+
+Code change: `install.sh` — guard moved ahead of the `mkdir -p`
+block so a refused install is a true no-op.
+
+New tests in `tests/test_installer.py`:
+
+- `test_install_refuses_when_cst_bin_is_regular_file` — asserts
+  non-zero exit, the stderr message, the regular file's bytes are
+  unchanged, it is still a regular file (not a symlink), and
+  `~/.claude/settings.json` was NOT created as a side effect.
+- `test_install_replaces_existing_symlink` — complements the
+  above; asserts the idempotent re-install path still works when
+  the existing entry is a symlink (even a stale/broken one).
+
+### Verification
+
+Full pytest run after both fixes:
+
+```
+...........................................                              [100%]
+43 passed in 2.19s
+```
+
+Delta from Sprint 1 baseline (36 → 43): +2 status validation tests
+(one parametrized into 4 cases is counted by pytest as 4) + 2 bin
+symlink tests + some refactor counts. Breakdown verified:
+6 registry + 9 scanner + 7 hooks + 13 CLI + 8 installer = 43.
+
+Manual sandbox re-verification:
+
+```
+=== Check 1: idempotency ===
+CHECK_1_PASS
+=== Check 10: installer preserves existing statusLine ===
+CHECK_10_PASS
+=== Probe 4: cst set --status rejects bogus value ===
+exit=1
+stderr: cst: --status must be in_progress|blocked|waiting|done
+stored status=in_progress
+PROBE_4_PASS
+=== Probe 12: install.sh refuses regular file at ~/.local/bin/cst ===
+cst install: <tmp>/.local/bin/cst exists as a regular file; refusing to overwrite. Remove it or move it aside, then rerun.
+exit=3
+is_symlink_now=no bytes_unchanged=yes settings_created=no
+PROBE_12_PASS
+```
+
+Updated `git log --oneline`:
+
+```
+fe2f83b install.sh: refuse to overwrite regular file at ~/.local/bin/cst
+a8b1e17 cst set: reject invalid --status values (enum: in_progress|blocked|waiting|done)
+de53c21 Sprint 1 handoff: generator_report.md
+e97516a Sprint 1 tests (36 passing) + SKILL.md
+cd037de Sprint 1 core: registry, scanner, hooks, cst CLI, installer
+c0936b3 Sprint 1 kickoff: spec + brainstorm + sprint_contract in place
+```
