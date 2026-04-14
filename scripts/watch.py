@@ -224,35 +224,44 @@ def _prompt(stdscr, label: str, preset: str = "") -> str | None:
     h, w = stdscr.getmaxyx()
     buf = list(preset)
     cur = len(buf)
-    while True:
-        line = f"{label}: " + "".join(buf)
-        stdscr.move(h - 1, 0)
-        stdscr.clrtoeol()
-        _safe_addnstr(stdscr, h - 1, 0, line[: w - 1], w - 1, curses.A_BOLD)
-        stdscr.move(h - 1, min(w - 1, len(label) + 2 + cur))
-        stdscr.refresh()
-        k = stdscr.get_wch()
-        if isinstance(k, str):
-            if k in ("\x1b",):
-                return None
-            if k in ("\n", "\r"):
-                return "".join(buf)
-            if k == "\x7f" or k == "\b":
-                if cur > 0:
-                    buf.pop(cur - 1)
+    # Main loop uses non-blocking timeout; switch to blocking while
+    # we wait for user input, then restore on exit.
+    stdscr.timeout(-1)
+    try:
+        while True:
+            line = f"{label}: " + "".join(buf)
+            stdscr.move(h - 1, 0)
+            stdscr.clrtoeol()
+            _safe_addnstr(stdscr, h - 1, 0, line[: w - 1], w - 1, curses.A_BOLD)
+            stdscr.move(h - 1, min(w - 1, len(label) + 2 + cur))
+            stdscr.refresh()
+            try:
+                k = stdscr.get_wch()
+            except curses.error:
+                continue
+            if isinstance(k, str):
+                if k in ("\x1b",):
+                    return None
+                if k in ("\n", "\r"):
+                    return "".join(buf)
+                if k == "\x7f" or k == "\b":
+                    if cur > 0:
+                        buf.pop(cur - 1)
+                        cur -= 1
+                else:
+                    buf.insert(cur, k)
+                    cur += 1
+            elif isinstance(k, int):
+                if k in (curses.KEY_BACKSPACE,):
+                    if cur > 0:
+                        buf.pop(cur - 1)
+                        cur -= 1
+                elif k == curses.KEY_LEFT and cur > 0:
                     cur -= 1
-            else:
-                buf.insert(cur, k)
-                cur += 1
-        elif isinstance(k, int):
-            if k in (curses.KEY_BACKSPACE,):
-                if cur > 0:
-                    buf.pop(cur - 1)
-                    cur -= 1
-            elif k == curses.KEY_LEFT and cur > 0:
-                cur -= 1
-            elif k == curses.KEY_RIGHT and cur < len(buf):
-                cur += 1
+                elif k == curses.KEY_RIGHT and cur < len(buf):
+                    cur += 1
+    finally:
+        stdscr.timeout(int(REFRESH_SECONDS * 0 + 200))
 
 
 def _apply_filter(rows: list[dict], q: str) -> list[dict]:
