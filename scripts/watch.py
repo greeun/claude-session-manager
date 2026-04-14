@@ -271,15 +271,23 @@ def _apply_filter(rows: list[dict], q: str) -> list[dict]:
 
 
 def _confirm_delete(stdscr, sid: str) -> bool:
-    """Prompt y/n and unlink the registry record. Returns True on delete."""
+    """Prompt y/n and delete registry record + transcript. Returns True."""
     import registry as _registry
-    confirm = _prompt(stdscr, f"delete {sid[:8]}? type 'y'")
+    import scanner as _scanner
+    transcripts = list(_scanner.projects_dir().glob(f"*/{sid}.jsonl"))
+    label = f"delete {sid[:8]} + {len(transcripts)} transcript(s)? type 'y'"
+    confirm = _prompt(stdscr, label)
     if not confirm or confirm.strip().lower() != "y":
         return False
     try:
         _registry.record_path(sid).unlink()
     except OSError:
         pass
+    for t in transcripts:
+        try:
+            t.unlink()
+        except OSError:
+            pass
     return True
 
 
