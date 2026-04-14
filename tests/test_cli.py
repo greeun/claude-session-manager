@@ -110,3 +110,24 @@ def test_set_unknown_id():
     r = _run(["set", "ffffffff-ffff-ffff-ffff-ffffffffffff", "--title", "x"])
     assert r.returncode == 1
     assert "no such session" in r.stderr
+
+
+def test_set_status_rejects_invalid_value():
+    sid = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"
+    registry.write(registry.new_record(sid, status="in_progress"))
+    r = _run(["set", sid, "--status", "bogus_value"])
+    assert r.returncode == 1
+    assert "--status must be in_progress|blocked|waiting|done" in r.stderr
+    # Record must NOT have been mutated.
+    rec = registry.read(sid)
+    assert rec["status"] == "in_progress"
+    assert rec["auto_detected"] is True
+
+
+@pytest.mark.parametrize("value", ["in_progress", "blocked", "waiting", "done"])
+def test_set_status_accepts_all_valid_values(value):
+    sid = "aeaeaeae-aeae-aeae-aeae-aeaeaeaeaeae"
+    registry.write(registry.new_record(sid, status="in_progress"))
+    r = _run(["set", sid, "--status", value])
+    assert r.returncode == 0, r.stderr
+    assert registry.read(sid)["status"] == value
