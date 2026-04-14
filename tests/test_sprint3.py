@@ -90,9 +90,11 @@ def test_watch_requires_tty(monkeypatch):
 
 # --- pin (AppleScript) non-darwin guard ------------------------------------ #
 
-def test_pin_refuses_on_non_darwin(monkeypatch):
+def test_pin_returns_6_when_no_terminal_available(monkeypatch):
     sys.path.insert(0, str(SKILL_DIR / "scripts"))
     import watch
+    # Simulate an environment with NO terminal CLI available.
+    monkeypatch.setattr(watch.shutil, "which", lambda x: None)
     monkeypatch.setattr(sys, "platform", "linux")
     assert watch.pin_in_iterm() == 6
 

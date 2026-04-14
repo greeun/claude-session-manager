@@ -4,6 +4,10 @@ allowed-tools: Bash
 argument-hint: "<note text>"
 ---
 
-Use the Bash tool to run: `csm set "$CLAUDE_SESSION_ID" --note "$ARGUMENTS"`
+Use the Bash tool to run:
+
+```
+SID="${CLAUDE_SESSION_ID:-$(csm current)}" && csm set "$SID" --note "$ARGUMENTS"
+```
 
 Report the result.

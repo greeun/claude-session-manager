@@ -515,17 +515,61 @@ end tell
 '''
 
 
-def pin_in_iterm() -> int:
-    if sys.platform != "darwin":
-        sys.stderr.write("csm watch --pin: only supported on macOS\n")
-        return 6
-    if not shutil.which("osascript"):
-        sys.stderr.write("csm watch --pin: osascript not found\n")
-        return 6
+def _pin_wezterm() -> int:
+    if not shutil.which("wezterm"):
+        return 1
+    try:
+        r = subprocess.run(
+            ["wezterm", "cli", "spawn", "--new-window", "--", "csm", "watch"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1
+    if r.returncode != 0:
+        return 1
+    if sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", 'tell application "WezTerm" to activate'], capture_output=True)
+    return 0
+
+
+def _pin_kitty() -> int:
+    if not shutil.which("kitty"):
+        return 1
+    try:
+        r = subprocess.run(
+            ["kitty", "@", "launch", "--type", "os-window", "csm", "watch"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1
+    return 0 if r.returncode == 0 else 1
+
+
+def _pin_iterm() -> int:
+    if sys.platform != "darwin" or not shutil.which("osascript"):
+        return 1
     cmd = '"csm watch"'
     script = _PIN_APPLESCRIPT.format(cmd=cmd)
     r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.stderr.write(f"csm watch --pin: iTerm2 not available ({r.stderr.strip()})\n")
-        return 6
-    return 0
+    return 0 if r.returncode == 0 else 1
+
+
+def pin_in_iterm() -> int:
+    """Open a pinned window running `csm watch` in whichever terminal is available.
+
+    Tries in order: caller's current terminal → WezTerm → Kitty → iTerm2.
+    """
+    tp = os.environ.get("TERM_PROGRAM") or ""
+    if (tp == "WezTerm" or os.environ.get("WEZTERM_PANE")) and _pin_wezterm() == 0:
+        return 0
+    if (tp == "kitty" or os.environ.get("KITTY_WINDOW_ID")) and _pin_kitty() == 0:
+        return 0
+    if tp == "iTerm.app" and _pin_iterm() == 0:
+        return 0
+    for fn in (_pin_wezterm, _pin_kitty, _pin_iterm):
+        if fn() == 0:
+            return 0
+    sys.stderr.write(
+        "csm watch --pin: no supported terminal found (install iTerm2, WezTerm, or kitty with remote control)\n"
+    )
+    return 6

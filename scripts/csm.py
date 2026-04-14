@@ -118,6 +118,38 @@ def _resolve_id_or_exit(prefix: str) -> str:
     return resolver.resolve_or_exit(prefix)
 
 
+def _current_session_id() -> str | None:
+    """Best-effort: the Claude Code session active in this shell.
+
+    Strategy:
+      1. $CLAUDE_SESSION_ID (set by some Claude Code contexts).
+      2. Most-recently-active session whose cwd equals $PWD.
+    """
+    env_sid = os.environ.get("CLAUDE_SESSION_ID")
+    if env_sid:
+        return env_sid
+    pwd = os.environ.get("PWD") or os.getcwd()
+    best = None
+    best_ts = ""
+    for r in registry.iter_records():
+        if (r.get("cwd") or "") != pwd or r.get("archived"):
+            continue
+        ts = r.get("last_activity_at") or ""
+        if ts > best_ts:
+            best_ts = ts
+            best = r
+    return best.get("session_id") if best else None
+
+
+def cmd_current(args: argparse.Namespace) -> int:
+    sid = _current_session_id()
+    if not sid:
+        sys.stderr.write("csm: no current session found for this cwd\n")
+        return 1
+    sys.stdout.write(sid + "\n")
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # Subcommand handlers
 # --------------------------------------------------------------------------- #
@@ -455,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     prs = sub.add_parser("review-stale", help="walk through stale sessions interactively")
     prs.set_defaults(func=cmd_review_stale)
+
+    pcu = sub.add_parser("current", help="print current session id (for slash commands)")
+    pcu.set_defaults(func=cmd_current)
 
     psl = sub.add_parser("statusline", help="emit Claude Code statusline text")
     psl.set_defaults(func=cmd_statusline)
