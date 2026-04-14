@@ -337,12 +337,19 @@ def _seed_from_jsonl(path: Path) -> tuple[str | None, str | None]:
 
 
 def _mtime_iso(path: Path) -> str:
+    """Transcript file mtime as a µs-precision UTC ``...Z`` string.
+
+    Float precision matches ``os.stat().st_mtime`` (nanoseconds on
+    APFS, rounded to microseconds by ``strftime("%f")``). This is
+    what the "fresher wins" comparison in §2.2 compares against
+    ``last_activity_at``.
+    """
     try:
         ts = path.stat().st_mtime
     except OSError:
         ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
     return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        "%Y-%m-%dT%H:%M:%S.%fZ"
     )
 
 
@@ -418,11 +425,21 @@ def scan_once() -> dict[str, int]:
             # AND differs from the stored value. The other two fields
             # (assistant summary, task hint) are scanner-only and
             # always refreshed when non-empty.
+            #
+            # Binding: timestamps are compared as parsed datetimes, not
+            # strings. Mixed-precision compare (seconds-only legacy
+            # stored value vs µs-precision mtime) is handled
+            # correctly by parsing both through ``parse_iso_z``.
+            from registry import parse_iso_z as _piz
             prog = _extract_progress(jf, existing.get("cwd") or cwd_seed)
             if prog is not None:
                 lup_new, las_new, cth_new = prog
-                stored_last_act = existing.get("last_activity_at") or ""
-                jsonl_newer = mtime > stored_last_act
+                stored_last_act_dt = _piz(existing.get("last_activity_at") or "")
+                mtime_dt = _piz(mtime)
+                jsonl_newer = (
+                    stored_last_act_dt is None
+                    or (mtime_dt is not None and mtime_dt > stored_last_act_dt)
+                )
                 cur_lup = existing.get("last_user_prompt", "")
                 if (
                     lup_new
@@ -442,8 +459,11 @@ def scan_once() -> dict[str, int]:
 
             # Always refresh last_activity_at to reflect file mtime, but
             # only if newer than the stored value (so that more recent
-            # hook activity wins).
-            if mtime > (existing.get("last_activity_at") or ""):
+            # hook activity wins). Compared as datetimes, not strings,
+            # for correct mixed-precision handling.
+            stored_la = _piz(existing.get("last_activity_at") or "")
+            mtime_la = _piz(mtime)
+            if mtime_la is not None and (stored_la is None or mtime_la > stored_la):
                 existing["last_activity_at"] = mtime
                 changed = True
 

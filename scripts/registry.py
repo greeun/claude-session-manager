@@ -32,7 +32,37 @@ PROGRESS_FIELDS = (
 
 
 def _utc_now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """UTC timestamp with microsecond precision, trailing Z.
+
+    Example: ``2026-04-14T15:03:27.041923Z``.
+
+    Sub-second precision is load-bearing for the scanner's "fresher
+    wins" comparison against JSONL file mtime (floats with ≥ µs
+    resolution on macOS APFS). Sprint 1 stored seconds-precision
+    timestamps; those continue to parse correctly via
+    :func:`parse_iso_z`.
+    """
+    return _dt.datetime.now(_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+
+
+def parse_iso_z(ts: str) -> _dt.datetime | None:
+    """Parse a UTC ``...Z`` timestamp, accepting second or µs precision.
+
+    Returns ``None`` when ``ts`` is falsy or unparseable. Returned
+    datetime is timezone-aware (UTC).
+    """
+    if not isinstance(ts, str) or not ts:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return _dt.datetime.strptime(ts, fmt).replace(
+                tzinfo=_dt.timezone.utc
+            )
+        except ValueError:
+            continue
+    return None
 
 
 def registry_dir() -> Path:

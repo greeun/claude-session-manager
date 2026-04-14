@@ -194,9 +194,10 @@ def activity() -> int:
             return 0
 
         # In-place update: bump activity, optionally write prompt.
-        existing["last_activity_at"] = _dt.datetime.now(_dt.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        # µs precision so two prompts in the same wall-clock second are
+        # still distinguishable by the scanner's fresher-wins rule.
+        from registry import _utc_now_iso as _now_iso
+        existing["last_activity_at"] = _now_iso()
         if truncated:
             existing["last_user_prompt"] = truncated
         registry_write(existing)
