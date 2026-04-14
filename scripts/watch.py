@@ -201,16 +201,18 @@ def _marquee(s: str, width: int, offset: int) -> str:
 _CSM_PY = _HERE / "csm.py"
 
 
-def _run_csm(stdscr, args: list[str]) -> None:
-    """Run `csm <args>` outside curses. Uses the sibling csm.py directly
-    so PATH doesn't need to include ~/.local/bin/csm."""
+def _run_csm(stdscr, args: list[str]) -> int:
+    """Run `csm <args>` outside curses and return its exit code."""
     import curses
     curses.endwin()
+    rc = 1
     try:
-        subprocess.run([sys.executable, str(_CSM_PY), *args], check=False)
+        r = subprocess.run([sys.executable, str(_CSM_PY), *args], check=False)
+        rc = r.returncode
         time.sleep(0.3)
     finally:
         stdscr.refresh()
+    return rc
 
 
 def _prompt(stdscr, label: str, preset: str = "") -> str | None:
@@ -459,7 +461,19 @@ def _tui(stdscr):
             elif k in ("k",) and rows and sel > 0:
                 sel -= 1
             elif rows and k in ("\n", "\r"):
-                _run_csm(stdscr, ["focus", rows[sel]["session_id"]])
+                sel_row = rows[sel]
+                sid = sel_row["session_id"]
+                # If the window is clearly closed and the session is still
+                # in_progress, auto-resume instead of showing a focus error.
+                window_closed = not sel_row.get("_window_open") and not sel_row.get("_live")
+                is_in_progress = (sel_row.get("status") or "in_progress") == "in_progress"
+                if window_closed and is_in_progress:
+                    _run_csm(stdscr, ["resume", sid])
+                else:
+                    rc = _run_csm(stdscr, ["focus", sid])
+                    # Focus failed — fall through to resume if still in_progress.
+                    if rc != 0 and is_in_progress:
+                        _run_csm(stdscr, ["resume", sid])
                 force_refresh = True
             elif rows and k == "r":
                 _run_csm(stdscr, ["resume", rows[sel]["session_id"]])
