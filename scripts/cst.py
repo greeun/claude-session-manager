@@ -133,6 +133,11 @@ def cmd_set(args: argparse.Namespace) -> int:
             return 1
         fields["priority"] = args.priority
     if args.status is not None:
+        if args.status not in ("in_progress", "blocked", "waiting", "done"):
+            sys.stderr.write(
+                "cst: --status must be in_progress|blocked|waiting|done\n"
+            )
+            return 1
         fields["status"] = args.status
     if args.note is not None:
         fields["note"] = args.note
