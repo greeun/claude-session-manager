@@ -363,26 +363,41 @@ def cmd_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_transcripts(sid: str) -> list[Path]:
+    """Locate every JSONL transcript file for `sid` under ~/.claude/projects/."""
+    base = scanner.projects_dir()
+    if not base.exists():
+        return []
+    return list(base.glob(f"*/{sid}.jsonl"))
+
+
 def cmd_delete(args: argparse.Namespace) -> int:
-    """Immediately remove a session's registry file.
+    """Delete a session: registry record + Claude Code transcript(s).
 
     Destructive. Requires --force or an interactive y/n confirmation.
-    Does NOT touch the underlying Claude Code transcript; only the
-    csm registry record is removed. A subsequent `csm scan` will
-    re-create an auto_detected draft from the transcript unless the
-    transcript is also gone.
+    Removes both the csm registry record AND the JSONL transcript(s)
+    in ~/.claude/projects/. After delete, `csm scan` will NOT re-create
+    a draft because the transcript is gone too.
+
+    Use `--keep-transcript` to preserve the JSONL (old behavior).
     """
     sid = _resolve_id_or_exit(args.id)
     rec = registry.read(sid)
-    if rec is None:
+    transcripts = _find_transcripts(sid)
+    if rec is None and not transcripts:
         sys.stderr.write(f"csm: no such session: {sid}\n")
         return 1
+    title = (rec.get("title") if rec else None) or "(untitled)"
+    proj = (rec.get("project_name") if rec else None) or "-"
     if not args.force:
-        title = rec.get("title") or "(untitled)"
-        proj = rec.get("project_name") or "-"
+        tr_summary = (
+            f" + {len(transcripts)} transcript file(s)"
+            if transcripts and not args.keep_transcript
+            else ""
+        )
         sys.stderr.write(
             f"About to delete {sid[:8]}  {title}  [{proj}]\n"
-            f"This removes the registry record only; the Claude Code transcript is preserved.\n"
+            f"Removing: registry record{tr_summary}.\n"
             f"Type 'y' to confirm: "
         )
         sys.stderr.flush()
@@ -393,15 +408,27 @@ def cmd_delete(args: argparse.Namespace) -> int:
         if ans != "y":
             sys.stderr.write("csm: delete aborted\n")
             return 2
+    # Registry file.
     path = registry.record_path(sid)
     try:
         path.unlink()
     except FileNotFoundError:
         pass
     except OSError as e:
-        sys.stderr.write(f"csm: delete failed: {e}\n")
+        sys.stderr.write(f"csm: delete failed on registry file: {e}\n")
         return 1
-    sys.stdout.write(f"csm: deleted {sid}\n")
+    # Transcript files.
+    removed = 0
+    if not args.keep_transcript:
+        for t in transcripts:
+            try:
+                t.unlink()
+                removed += 1
+            except OSError as e:
+                sys.stderr.write(f"csm: warning, could not remove {t}: {e}\n")
+    sys.stdout.write(
+        f"csm: deleted {sid} (registry + {removed} transcript file(s))\n"
+    )
     return 0
 
 
@@ -511,9 +538,17 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("id")
     pa.set_defaults(func=cmd_archive)
 
-    pde = sub.add_parser("delete", help="permanently delete a session record")
+    pde = sub.add_parser(
+        "delete",
+        help="permanently delete a session record AND its transcript(s)",
+    )
     pde.add_argument("id")
     pde.add_argument("--force", "-f", action="store_true", help="skip y/n prompt")
+    pde.add_argument(
+        "--keep-transcript",
+        action="store_true",
+        help="remove registry record only; preserve the JSONL transcript",
+    )
     pde.set_defaults(func=cmd_delete)
 
     psc = sub.add_parser("scan", help="scan ~/.claude/projects")
