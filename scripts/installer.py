@@ -1,0 +1,150 @@
+"""Installer helpers called from ``install.sh``.
+
+Exit codes:
+* 0  — success
+* 2  — ``~/.claude/settings.json`` exists but is not valid JSON
+       (policy (a): do not modify, do not back up, ask the user to fix)
+* 1  — other failures
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+HOOK_COMMANDS = {
+    "SessionStart": "cst hook session-start",
+    "UserPromptSubmit": "cst hook activity",
+}
+
+
+def _settings_path() -> Path:
+    return Path(os.path.expanduser("~")) / ".claude" / "settings.json"
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmpname = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmpname, path)
+    except Exception:
+        try:
+            os.unlink(tmpname)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _load_settings(path: Path) -> dict[str, Any]:
+    """Load settings.json. On malformed: print + sys.exit(2)."""
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        sys.stderr.write(f"cst install: cannot read {path}: {e}\n")
+        sys.exit(1)
+    if not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(
+            f"cst install: {path} is not valid JSON ({e.__class__.__name__}: {e}).\n"
+            "cst install: refusing to modify it. Please fix or remove the file "
+            "and re-run install.\n"
+        )
+        sys.exit(2)
+    if not isinstance(data, dict):
+        sys.stderr.write(
+            f"cst install: {path} is not a JSON object; refusing to modify.\n"
+        )
+        sys.exit(2)
+    return data
+
+
+def _existing_commands(hooks_for_event: list[dict[str, Any]]) -> list[str]:
+    """Flatten existing ``hooks[<event>][].hooks[].command`` strings."""
+    out: list[str] = []
+    for matcher in hooks_for_event:
+        if not isinstance(matcher, dict):
+            continue
+        for h in matcher.get("hooks", []):
+            if not isinstance(h, dict):
+                continue
+            cmd = h.get("command")
+            if isinstance(cmd, str):
+                out.append(cmd)
+    return out
+
+
+def _merge_hooks(settings: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
+    """Ensure both hook commands are present (full-string match).
+
+    Returns ``(settings, existing_count, appended_count)``.
+    """
+    hooks = settings.setdefault("hooks", {})
+    existing_total = 0
+    appended_total = 0
+    for event, command in HOOK_COMMANDS.items():
+        arr = hooks.get(event)
+        if not isinstance(arr, list):
+            arr = []
+            hooks[event] = arr
+        existing_cmds = _existing_commands(arr)
+        existing_total += len(existing_cmds)
+        # Full-string equality — NOT substring.
+        if command in existing_cmds:
+            continue
+        arr.append(
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": command}],
+            }
+        )
+        appended_total += 1
+    return settings, existing_total, appended_total
+
+
+def merge_settings() -> int:
+    path = _settings_path()
+    # Ensure parent directory exists even when we're creating from scratch.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    settings = _load_settings(path)
+    merged, existing, appended = _merge_hooks(settings)
+    _atomic_write_json(path, merged)
+    sys.stdout.write(
+        f"cst install: merged hooks into {path} "
+        f"(found {existing} existing hook entr{'y' if existing == 1 else 'ies'}, "
+        f"appended {appended} new)\n"
+    )
+    return 0
+
+
+def ensure_taskdir() -> int:
+    p = Path(os.path.expanduser("~")) / ".claude" / "claude-tasks"
+    p.mkdir(parents=True, exist_ok=True)
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.stderr.write("usage: installer.py {merge-settings|ensure-taskdir}\n")
+        sys.exit(1)
+    cmd = sys.argv[1]
+    if cmd == "merge-settings":
+        sys.exit(merge_settings())
+    if cmd == "ensure-taskdir":
+        sys.exit(ensure_taskdir())
+    sys.stderr.write(f"installer.py: unknown subcommand: {cmd}\n")
+    sys.exit(1)
