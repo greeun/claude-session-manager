@@ -1,6 +1,8 @@
 # claude-session-manager (`csm`)
 
-Track, triage, focus, and resume every concurrent Claude Code session on macOS.
+**[한국어 README](./README.ko.md)**
+
+Track, triage, focus, and resume every concurrent Claude Code session.
 
 When you have five Claude Code windows open across three projects, `csm` gives you
 one command to see them all, jump to the right terminal, and resume any session that
@@ -22,15 +24,17 @@ was closed.
   `SessionStart` / `UserPromptSubmit` hooks; no manual bookkeeping.
 - **Progress at a glance** — last user prompt and current tool activity
   (`Editing: foo.ts`, `Running: pytest`) rendered under each row.
-- **Live vs. idle dot** — `●` when the Claude process is still running, `○` when
-  the window is idle or closed.
+- **Live vs. idle vs. closed dot** — `●` claude process attached, `◉` window
+  open but process exited, `○` window closed.
 - **Priority + status triage** — tag sessions `high`/`medium`/`low` and
   `in_progress`/`blocked`/`waiting`/`done`.
 - **Stale detection** — sessions with no activity past the configured threshold
   (default 4h) are flagged; `csm review-stale` walks you through keep/done/archive.
-- **Focus & resume** — `csm focus <id>` brings the owning terminal window to the
-  front; `csm resume <id>` opens a fresh window and runs `claude --resume <id>`.
-  Supports iTerm2, Terminal.app, WezTerm, Kitty, and Ghostty.
+- **Focus & resume across terminals** — `csm focus <id>` tries, in order: tmux
+  IPC → native IPC (iTerm2 / Terminal.app AppleScript, WezTerm `wezterm cli`,
+  Kitty `kitty @`) → title-marker matching (macOS System Events, X11 `wmctrl`
+  / `xdotool`, Wayland `swaymsg`). `csm resume <id>` spawns a new window in
+  whichever terminal is available.
 - **Statusline integration** — compact pending/stale summary in the Claude Code
   statusline.
 - **Slash commands** — `/tasks`, `/task-register`, `/task-focus`, `/task-done`,
@@ -39,8 +43,8 @@ was closed.
 
 ## Requirements
 
-- macOS (focus/resume use AppleScript / terminal CLIs; registry + list work anywhere)
-- Python 3.9+
+- macOS, Linux (X11 or Wayland); tmux optional
+- Python 3.9+ (`rich` optional for colored `csm list` output; curses stdlib for `csm watch`)
 - Claude Code
 
 ## Install
@@ -199,7 +203,8 @@ Code itself.
 | Subcommand | macOS | Linux | Windows |
 |---|---|---|---|
 | `list`, `set`, `done`, `archive`, `scan`, `statusline`, `gc`, `review-stale`, `watch` | ✓ | ✓ | ✓ |
-| `focus`, `resume` | ✓ | exit 6 | exit 6 |
+| `focus` | ✓ | ✓ (X11/Wayland via title match) | exit 6 |
+| `resume` | ✓ | ✓ (WezTerm/Kitty only) | exit 6 |
 
 The live-vs-idle dot degrades gracefully to `○` if `ps` output can't be parsed.
 
