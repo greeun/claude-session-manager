@@ -759,7 +759,7 @@ print('PROGRESS_EXTRACT_OK')
 ```
 **Expected:** prints `PROGRESS_EXTRACT_OK`.
 
-### Check 2 — Scanner ALWAYS overwrites progress fields (auto_detected=false does NOT protect them)
+### Check 2 — Scanner overwrites progress fields when JSONL is fresher (user-owned fields still preserved)
 
 ```bash
 cst set $SID --title "User Title" --priority high   # flips auto_detected=false
@@ -773,19 +773,30 @@ r['last_assistant_summary'] = 'GARBAGE'
 r['current_task_hint'] = 'GARBAGE'
 p.write_text(json.dumps(r))
 "
+# Bump JSONL mtime forward so scanner's fresher-wins rule (§2.2 rule 3)
+# overwrites last_user_prompt. last_assistant_summary and
+# current_task_hint are scanner-only (§2.2 rule 4) and always refresh.
+python3 -c "
+import os, time, pathlib
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+future = time.time() + 5
+os.utime(p, (future, future))
+"
 cst scan >/dev/null
 python3 -c "
 import json, pathlib, os
 r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
 assert r['title'] == 'User Title', r     # user-owned: preserved
 assert r['priority'] == 'high', r         # user-owned: preserved
-assert r['last_user_prompt'] != 'GARBAGE', r
-assert r['last_assistant_summary'] != 'GARBAGE', r
-assert r['current_task_hint'] == 'Running: pytest -q tests/', r
+assert r['last_user_prompt'] != 'GARBAGE', r              # fresher-wins fires
+assert r['last_assistant_summary'] != 'GARBAGE', r        # scanner-only
+assert r['current_task_hint'] == 'Running: pytest -q tests/', r  # scanner-only
 print('SCANNER_OVERWRITES_PROGRESS_OK')
 "
 ```
 **Expected:** prints `SCANNER_OVERWRITES_PROGRESS_OK`.
+
+(The fresher-wins negative direction — scanner refusing to regress a hook-written prompt — is covered by Check 29.)
 
 ### Check 3 — Truncation to 100 chars with single `…` code point
 

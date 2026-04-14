@@ -233,7 +233,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
         sys.stderr.write(f"cst: record disappeared: {sid}\n")
         return 1
     rec["archived"] = True
-    rec["archived_at"] = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec["archived_at"] = registry._utc_now_iso()
     registry.write(rec)
     return 0
 
