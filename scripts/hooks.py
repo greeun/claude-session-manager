@@ -18,7 +18,14 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from registry import registry_dir, upsert_from_hook, touch_activity
+from registry import (
+    new_record,
+    read as registry_read,
+    registry_dir,
+    touch_activity,
+    upsert_from_hook,
+    write as registry_write,
+)
 
 
 def _log_path() -> Path:
@@ -126,15 +133,73 @@ def session_start() -> int:
         return 0
 
 
+_PROMPT_TRUNC_LIMIT = 100
+_ELLIPSIS = "\u2026"
+
+
+def _truncate_prompt(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    line = text.splitlines()[0] if text else ""
+    if len(line) <= _PROMPT_TRUNC_LIMIT:
+        return line
+    return line[: _PROMPT_TRUNC_LIMIT - 1] + _ELLIPSIS
+
+
+def _resolve_prompt(payload: dict[str, Any]) -> str:
+    """Extract the user prompt from the UserPromptSubmit payload.
+
+    Reads BOTH ``prompt`` and ``user_prompt`` top-level keys and uses
+    the first non-empty string per sprint_contract.md risk §10.1.
+    """
+    for key in ("prompt", "user_prompt"):
+        v = payload.get(key)
+        if isinstance(v, str) and v:
+            return v
+    return ""
+
+
 def activity() -> int:
-    """Entry: ``cst hook activity``. Always returns 0."""
+    """Entry: ``cst hook activity``. Always returns 0.
+
+    Binding behaviors:
+    - Stdin-first payload parsing with env-var fallback (Sprint 1).
+    - When payload supplies a ``prompt`` / ``user_prompt`` string,
+      writes it into ``last_user_prompt`` (truncated to 100 chars).
+    - If the record does not exist yet, creates a skeleton
+      (§2.3 option (a)).
+    - Always exits 0; no partial writes.
+    """
     try:
         payload = _read_stdin_payload()
         sid = _resolve_session_id(payload)
         if not sid:
             log_error("activity: missing session_id (no stdin, no env)")
             return 0
-        touch_activity(sid)
+
+        prompt_text = _resolve_prompt(payload)
+        truncated = _truncate_prompt(prompt_text) if prompt_text else ""
+
+        existing = registry_read(sid)
+        if existing is None:
+            # Create-skeleton branch. touch_activity already creates a
+            # minimal record, so we call it then optionally layer in the
+            # prompt.
+            touch_activity(sid)
+            if truncated:
+                rec = registry_read(sid)
+                if rec is not None:
+                    rec["last_user_prompt"] = truncated
+                    registry_write(rec)
+            return 0
+
+        # In-place update: bump activity, optionally write prompt.
+        existing["last_activity_at"] = _dt.datetime.now(_dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        if truncated:
+            existing["last_user_prompt"] = truncated
+        registry_write(existing)
         return 0
     except Exception as e:
         log_error(

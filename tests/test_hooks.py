@@ -125,3 +125,86 @@ def test_distinct_session_ids_create_distinct_records(monkeypatch):
     assert registry.read(SID_A)["cwd"] == "/tmp/a"
     assert registry.read(SID_B)["cwd"] == "/tmp/b"
     assert len(list(registry.iter_records())) == 2
+
+
+# ---------------- Sprint 2 extensions -----------------------------------
+
+
+def test_activity_hook_writes_last_user_prompt_from_stdin(monkeypatch):
+    _clear_env(monkeypatch)
+    registry.write(registry.new_record(SID_A))
+    _feed_stdin(monkeypatch, json.dumps({"session_id": SID_A, "prompt": "Fix login bug"}))
+    rc = hook_mod.activity()
+    assert rc == 0
+    assert registry.read(SID_A)["last_user_prompt"] == "Fix login bug"
+
+
+def test_activity_hook_accepts_user_prompt_key_variant(monkeypatch):
+    _clear_env(monkeypatch)
+    registry.write(registry.new_record(SID_A))
+    _feed_stdin(
+        monkeypatch,
+        json.dumps({"session_id": SID_A, "user_prompt": "alt-key value"}),
+    )
+    assert hook_mod.activity() == 0
+    assert registry.read(SID_A)["last_user_prompt"] == "alt-key value"
+
+
+def test_activity_hook_truncates_long_prompt_from_stdin(monkeypatch):
+    _clear_env(monkeypatch)
+    registry.write(registry.new_record(SID_A))
+    big = "X" * 500
+    _feed_stdin(monkeypatch, json.dumps({"session_id": SID_A, "prompt": big}))
+    assert hook_mod.activity() == 0
+    p = registry.read(SID_A)["last_user_prompt"]
+    assert len(p) == 100
+    assert p.endswith("\u2026")
+
+
+def test_activity_hook_ignores_missing_prompt_field(monkeypatch):
+    _clear_env(monkeypatch)
+    rec = registry.new_record(SID_A)
+    rec["last_user_prompt"] = "prior"
+    registry.write(rec)
+    old = registry.read(SID_A)["last_activity_at"]
+    time.sleep(1.05)
+    _feed_stdin(monkeypatch, json.dumps({"session_id": SID_A}))
+    assert hook_mod.activity() == 0
+    r = registry.read(SID_A)
+    assert r["last_user_prompt"] == "prior"   # unchanged
+    assert r["last_activity_at"] > old        # still bumped
+
+
+def test_activity_hook_does_not_write_assistant_summary_or_task_hint(monkeypatch):
+    _clear_env(monkeypatch)
+    registry.write(registry.new_record(SID_A))
+    _feed_stdin(
+        monkeypatch,
+        json.dumps(
+            {
+                "session_id": SID_A,
+                "prompt": "x",
+                "last_assistant_summary": "HACK",   # ignored
+                "current_task_hint": "HACK",        # ignored
+            }
+        ),
+    )
+    assert hook_mod.activity() == 0
+    r = registry.read(SID_A)
+    assert r["last_assistant_summary"] == ""
+    assert r["current_task_hint"] == ""
+
+
+def test_activity_hook_on_unknown_session_id(monkeypatch):
+    _clear_env(monkeypatch)
+    assert registry.read(SID_A) is None
+    _feed_stdin(
+        monkeypatch,
+        json.dumps({"session_id": SID_A, "prompt": "first-ever"}),
+    )
+    assert hook_mod.activity() == 0
+    r = registry.read(SID_A)
+    assert r is not None
+    assert r["session_id"] == SID_A
+    assert r["last_user_prompt"] == "first-ever"
+    assert r["auto_detected"] is True
