@@ -115,7 +115,6 @@ def build_applescript(record: dict, *, prefer: str | None = None) -> str:
 
 
 def _wezterm_resume(cwd: str, sid: str) -> int:
-    """Open a new WezTerm window running `claude --resume <sid>`."""
     import shutil as _sh
     if not _sh.which("wezterm"):
         return 1
@@ -131,8 +130,57 @@ def _wezterm_resume(cwd: str, sid: str) -> int:
         return 1
     if r.returncode != 0:
         return 1
-    # Bring WezTerm to the front.
     _run_osascript(["-e", 'tell application "WezTerm" to activate'])
+    return 0
+
+
+def _kitty_resume(cwd: str, sid: str) -> int:
+    """Open a new kitty OS window. Requires remote control (allow_remote_control yes)."""
+    import shutil as _sh
+    if not _sh.which("kitty"):
+        return 1
+    try:
+        r = subprocess.run(
+            [
+                "kitty", "@", "launch",
+                "--type", "os-window",
+                "--cwd", cwd,
+                "claude", "--resume", sid,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1
+    if r.returncode != 0:
+        return 1
+    if sys.platform == "darwin":
+        _run_osascript(["-e", 'tell application "kitty" to activate'])
+    return 0
+
+
+def _generic_macos_resume(app_name: str, cwd: str, sid: str) -> int:
+    """Last-ditch macOS resume: write a tiny helper script, `open -na <App>`
+    with it as argument. Works for any terminal app that accepts a file
+    argument (most don't — many just ignore). Falls back to `open -na`
+    which opens the app; user still has to run the command manually."""
+    if sys.platform != "darwin":
+        return 1
+    import shutil as _sh
+    if not _sh.which("open"):
+        return 1
+    # Best-effort: just activate the app. The user will need to run
+    # `claude --resume <sid>` themselves. We print the command so they
+    # can paste it.
+    try:
+        subprocess.run(
+            ["open", "-a", app_name], capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1
+    sys.stderr.write(
+        f"csm: opened {app_name}; please run in the new window:\n"
+        f"    cd {shlex.quote(cwd)} && claude --resume {shlex.quote(sid)}\n"
+    )
     return 0
 
 
@@ -162,6 +210,12 @@ def run(record: dict) -> int:
     # Prefer the terminal the session originally used so the user sees it.
     if app == "WezTerm" and _wezterm_resume(cwd, sid) == 0:
         return 0
+    if app in ("kitty", "Kitty") and _kitty_resume(cwd, sid) == 0:
+        return 0
+    # Ghostty / Alacritty / Warp / etc: try the generic macOS open-app path.
+    if app and app not in ("iTerm.app", "iTerm2", "Apple_Terminal", "Terminal", "WezTerm", "kitty", "Kitty"):
+        if _generic_macos_resume(app, cwd, sid) == 0:
+            return 0
 
     # iTerm2 / Terminal.app via AppleScript.
     try:

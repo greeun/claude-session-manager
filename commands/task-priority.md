@@ -4,6 +4,10 @@ allowed-tools: Bash
 argument-hint: "high|medium|low"
 ---
 
-Use the Bash tool to run: `csm set "$CLAUDE_SESSION_ID" --priority "$ARGUMENTS"`
+Use the Bash tool to run:
+
+```
+SID="${CLAUDE_SESSION_ID:-$(csm current)}" && csm set "$SID" --priority "$ARGUMENTS"
+```
 
 Report the result.
