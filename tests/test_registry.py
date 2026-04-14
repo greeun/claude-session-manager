@@ -100,6 +100,43 @@ def test_concurrent_writes():
     assert b["title"] == "B"
 
 
+def test_new_record_seeds_progress_fields_empty():
+    rec = registry.new_record(SID_A)
+    assert rec["last_user_prompt"] == ""
+    assert rec["last_assistant_summary"] == ""
+    assert rec["current_task_hint"] == ""
+
+
+def test_read_tolerates_missing_progress_fields():
+    # Legacy Sprint 1-shaped record (no progress fields on disk).
+    legacy = {
+        "session_id": SID_A, "title": "legacy", "priority": "medium",
+        "status": "in_progress", "cwd": None, "project_name": None,
+        "tags": [], "note": "",
+        "created_at": "2025-01-01T00:00:00Z",
+        "last_activity_at": "2025-01-01T00:00:00Z",
+        "terminal": {"app": None, "window_id": None, "tab_id": None, "tty": None},
+        "auto_detected": True, "archived": False, "archived_at": None,
+    }
+    p = registry.record_path(SID_A)
+    p.write_text(json.dumps(legacy), encoding="utf-8")
+    got = registry.read(SID_A)
+    assert got["last_user_prompt"] == ""
+    assert got["last_assistant_summary"] == ""
+    assert got["current_task_hint"] == ""
+
+
+def test_update_refuses_progress_field_keys():
+    registry.write(registry.new_record(SID_A))
+    for k in ("last_user_prompt", "last_assistant_summary", "current_task_hint"):
+        with pytest.raises(ValueError):
+            registry.update(SID_A, **{k: "GARBAGE"})
+    rec = registry.read(SID_A)
+    assert rec["last_user_prompt"] == ""
+    assert rec["last_assistant_summary"] == ""
+    assert rec["current_task_hint"] == ""
+
+
 def test_sort_priority_and_recency():
     # Build records with known activity timestamps (lexicographic ordering
     # matches chronological for ISO-Z timestamps).

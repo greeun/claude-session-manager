@@ -174,7 +174,7 @@ A footer banner appears when any stale sessions exist, instructing the user to r
 
 ### 6.4 Claude Code slash commands
 
-- `/tasks` — prints a numbered list in chat: `[n] ●/○ priority  title  project  <time> ago`. Numbers are stable within the single response.
+- `/tasks` — prints a numbered list in chat. Each session renders as a headline line `[n] ●/○ priority  title  project  <time> ago`, followed by up to two dim sub-lines: `⤷ <last user prompt>` and `⚙ <current task hint>` (either is skipped when empty). Numbers are stable within the single response.
 - `/task-register [title] [priority]` — registers / annotates the current session.
 - `/task-note "<text>"` — updates the current session's note.
 - `/task-priority high|medium|low` — changes the current session's priority.
@@ -198,6 +198,7 @@ The following are explicitly out of scope and must not be implemented:
 - Overwriting user-edited fields from the scanner.
 - Silent overwrite of an existing user statusline configuration.
 - Any hook that can block or delay the user's Claude Code session on failure.
+- Any external AI model inference for progress fields. The last user prompt, last assistant summary, and current task hint are produced purely by extracting and truncating content already present in the local transcript; no model call is made to generate them.
 
 ## 8. Definition of Done
 
@@ -261,4 +262,17 @@ All of the following must be observably true on a clean macOS machine after runn
 ### Platform
 - [ ] Everything works on macOS. The tool is permitted to refuse to run on non-macOS platforms with a clear message.
 
-SPEC_READY: spec.md
+### Progress capture and display
+- [ ] After a user submits a prompt in a Claude Code session, `cst list` within roughly 2 seconds shows that prompt's text (truncated to ~100 chars) as a dim `⤷ …` sub-row on that session's row.
+- [ ] The same row's current-task-hint sub-row (`⚙ …`) reflects the latest tool-use block in the transcript (e.g. `Running: pytest -q tests/`, `Editing: scripts/cst.py`); when no tool-use is near the tail, the sub-row is omitted rather than showing a placeholder.
+- [ ] `cst list --compact` returns to a single-line-per-session format with no progress sub-rows, suitable for CI and shell pipelines.
+- [ ] `/tasks` output inside Claude Code includes the same `⤷` and `⚙` sub-lines beneath each numbered headline.
+- [ ] In the watch TUI, highlighting a row reveals a detail panel containing the full last assistant summary, the full last user prompt, and the full current task hint (no external truncation in the panel).
+- [ ] Progress fields are never written by the user and are always refreshed by the scanner / hook without user action; the fresher of the two signals wins.
+- [ ] No external AI model is invoked to produce any progress field.
+
+## 9. Changelog
+
+- 2026-04-14: added progress-capture feature (last_user_prompt, last_assistant_summary, current_task_hint).
+
+SPEC_AMENDED: spec.md

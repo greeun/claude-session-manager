@@ -1,613 +1,2070 @@
-# Sprint 1 Contract — Claude Session Manager
+# Sprint 2 Contract — Claude Session Manager
 
-## 1. Sprint 1 goal
+> Sprint 1 is shipped (43 passing tests, 14/14 observable checks). Its
+> contract is preserved at `sprint_1_contract.md` and in git history.
+> This file supersedes it for Sprint 2.
 
-Deliver an end-to-end "tracer bullet" of the core registry loop: a `cst` CLI that can scan `~/.claude/projects/`, create per-session JSON records, list and mutate them, with working `session-start` and `activity` hook entry points and an idempotent installer that wires everything into `~/.claude/settings.json`.
+## 1. Sprint 2 goal
+
+Turn the registry into a useful daily driver for a macOS Claude Code
+power user: the scanner extracts at-a-glance progress fields from
+transcripts, `cst list` renders multi-line rows (with a `--compact`
+fallback), stale detection + triage surface forgotten work,
+`cst focus` / `cst resume` / statusline wire the tool into actual
+workflows, `cst gc` reclaims disk, short-id prefix matching lands for
+ergonomics, and a config file + macOS guard + `.claude/settings.json`
+statusline wiring round out the installation story.
 
 ## 2. Features in this sprint
 
-The slice below targets specific Definition of Done bullets from `spec.md` §8.
+The slice below targets specific Definition of Done bullets from
+`spec.md` §8 (including the new **Progress capture and display**
+subsection).
 
-- **Registry storage (per-session JSON files under `~/.claude/claude-tasks/`)**
-  - Atomic per-record writes (temp file + `os.replace`).
-  - Per-record corrupt-file isolation: a malformed JSON file is renamed to `<id>.json.corrupt-<timestamp>` and reads of siblings continue.
-  - Satisfies DoD bullets: *"Corrupting a single registry record on disk does not prevent `cst list` ... from functioning ..."* and *"All `cst` subcommands ... no subcommand leaves the registry partially written."*
+### 2.1 Record schema extension (new progress fields)
 
-- **Scanner (minimal)**
-  - Walks `~/.claude/projects/*/*.jsonl`. The filename stem must match the canonical UUID regex `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`; files whose stem does not match are silently skipped (not treated as sessions, no record created, no crash).
-  - For each valid UUID file, upserts records with `auto_detected=true`, `cwd` (from the first JSONL line's `cwd` field if present, else `null`), `project_name` (see decoding rule below), `last_activity_at` from file mtime, and a seeded `title`.
-  - **Title seeding rule:** scan JSONL lines in order; pick the FIRST line whose `type == "user"` and whose `message.content` (or `content`) contains extractable plain text; trim to 60 chars. If no such line exists (empty file, assistant-only transcript, malformed), fall back to `project_name`. A first-line-is-assistant transcript must still yield the later user message's text.
-  - **Project-slug → `project_name` decoding rule (binding):** Claude Code encodes the project directory path with forward slashes replaced by `-` and a leading `-` for the root slash, e.g. `/tmp/fake-proj` → `-tmp-fake-proj`. The scanner decodes this by stripping exactly one leading `-` and replacing the remaining `-` characters with `/`, then taking the basename. So `-tmp-fake-proj` → `/tmp/fake-proj` → `fake-proj`. If decoding yields an empty basename, `project_name` defaults to the raw slug. This contract is fixed for Sprint 1 so Sprint 2's focus/resume can rely on it.
-  - Never overwrites user-owned fields (`title`, `priority`, `status`, `note`, `tags`) once `auto_detected=false`.
-  - Never transitions records to `archived` or deletes anything.
-  - Satisfies DoD bullets: *"Opening a brand-new terminal window and running `claude` causes a new session record to appear ..."*, *"A newly detected session with no user title has a non-empty title ..."*, and *"Running `/task-register` ... flipped auto_detected to false; subsequent scans no longer overwrite ..."* (the registry + scanner side; slash command itself deferred — user can simulate via `cst set` which is included).
+Three new **scanner-owned** fields are added to every record. Binding
+rules:
 
-- **CLI subcommands delivered in Sprint 1**
-  - `cst list` — prints one row per non-archived session, sorted by priority (high→medium→low) then `last_activity_at` desc. Output format (binding): tab-separated columns in this exact order — `short_id` (first 8 hex chars of `session_id`), `priority` (one of `high`/`medium`/`low`), `status`, `title`, `project_name`, `relative_time`. Exactly one row per session; no header row; `(no sessions)` printed when the registry is empty. Exit 0 on empty registry. Satisfies DoD: *"After install, `cst list` exits 0 even when the registry is empty."* and *"`cst list` rows are ordered by priority (high→low) then by most-recent activity."*
-  - `cst list --all` — includes archived.
-  - `cst list --json` — emits a JSON array of records in the same sort order. Each element contains at minimum `session_id`, `short_id`, `priority`, `status`, `title`, `project_name`, `last_activity_at`, `archived`. This is the machine-checkable representation tests and checks rely on for ordering assertions.
-  - `cst --version` — prints the skill version string (Sprint 1 = `cst 0.1.0`) to stdout and exits 0.
-  - `cst set <id> [--title ...] [--priority ...] [--status ...] [--note ...] [--tags a,b]` — mutates a record and flips `auto_detected=false`. Satisfies cross-surface parity DoD bullet (write half).
-  - `cst done <id>` — sets `status=done`, keeps record visible.
-  - `cst archive <id>` — sets `archived=true`, `archived_at=now`.
-  - `cst scan` — forces a scan pass and prints a one-line summary (`scanned N, created M, updated K`).
+- `last_user_prompt` — string (default `""`). Truncated to at most
+  100 characters; longer content ends with `"…"` (single U+2026 code
+  point, not three dots). Single line: the first newline terminates
+  extraction.
+- `last_assistant_summary` — string (default `""`). Same 100-char /
+  1-line truncation rule.
+- `current_task_hint` — string (default `""`). Built from the last
+  `tool_use` block near the transcript tail. Format is one of:
+  - `"Running: <command>"` when the tool is `Bash` and the
+    `command` input field is a non-empty string.
+  - `"Editing: <relpath-or-basename>"` when the tool is `Edit`,
+    `Write`, `MultiEdit`, or `NotebookEdit` and `file_path` is a
+    non-empty string. Relpath is computed as `os.path.relpath(file_path, cwd)`
+    when `cwd` is set and `file_path` starts with `cwd`; otherwise
+    basename.
+  - `"Reading: <relpath-or-basename>"` for `Read`.
+  - `"Searching: <pattern>"` for `Grep`/`Glob` when `pattern` is a
+    non-empty string.
+  - `"<ToolName>"` (just the bare tool name) as a fallback when the
+    tool is recognised but its distinguishing input field is
+    missing/empty.
+  - `""` (empty) when the last 50 JSONL lines contain no `tool_use`
+    block, when the tool name is missing, or when parsing fails.
+  The composed hint is also truncated to 100 chars with `"…"` suffix.
 
-- **Hook entry points**
+**Ownership rule (binding).** These three fields are scanner-owned
+and **always overwritten** on every scan pass. `auto_detected=false`
+does NOT protect them. The scanner never reads them, only writes
+them. A user-set value (from `cst set` or any CLI path) is explicitly
+rejected — there is no CLI flag to write them. This is the inversion
+of the user-owned fields (`title`/`priority`/`status`/`note`/`tags`).
 
-  **Hook stdin payload contract (binding).** Per Claude Code's hooks documentation, both `SessionStart` and `UserPromptSubmit` hooks deliver a JSON payload on stdin containing at minimum the fields `session_id`, `cwd`, `hook_event_name`, and `transcript_path`. Our hook commands MUST parse stdin as JSON FIRST, and use environment variables (`CLAUDE_SESSION_ID`, `CLAUDE_PROJECT_DIR`, `PWD`) only as a fallback when stdin is empty, not a TTY, or not valid JSON. This is load-bearing: env-var-only parsing would silently no-op in real Claude Code use.
+`new_record()` seeds the three fields to `""`; existing Sprint 1
+records on disk get the fields added (with `""`) on first write after
+upgrade — reads tolerate their absence and treat missing as `""`.
 
-  - `cst hook session-start` — reads stdin as JSON (`session_id`, `cwd`, `transcript_path`) with env vars (`CLAUDE_SESSION_ID`, `CLAUDE_PROJECT_DIR` / `PWD`) as fallback. Upserts a record; best-effort terminal capture (`TERM_PROGRAM` → `terminal.app`, `tty` via `os.ttyname(0)` when available). Always exits 0 even on exception. On any failure path (missing id, write error, malformed stdin), appends a timestamped line naming the exception class / missing field to `~/.claude/claude-tasks/.hook-errors.log` before exiting 0. Satisfies DoD: *"Failing hooks do not block the user's Claude Code session."*
-  - `cst hook activity` — reads stdin as JSON (`session_id`) with `CLAUDE_SESSION_ID` env var as fallback. Touches `last_activity_at`. Exits 0 unconditionally. Same error-logging contract.
+Satisfies DoD bullets: *"Progress fields are never written by the user
+and are always refreshed by the scanner / hook without user action"*,
+*"No external AI model is invoked to produce any progress field"*.
 
-- **Installer (`install.sh`)**
-  - Creates symlink: `ln -sfn "$(pwd)" ~/.claude/skills/claude-session-manager`.
-  - Creates `~/.local/bin/cst` symlink to `scripts/cst.py` (and `chmod +x`). Warns if `~/.local/bin` not in PATH.
-  - Creates `~/.claude/` and `~/.claude/claude-tasks/` if missing. If `~/.claude/settings.json` does not exist, creates it with `{}` before merging.
-  - Idempotently merges into `~/.claude/settings.json`:
-    - Hook-merge idempotency rule (binding): a hook entry is considered "already present" iff there exists a `hooks[<Event>][].hooks[].command` value whose full string is EXACTLY equal to the literal the installer would insert (`cst hook session-start` or `cst hook activity`). Substring matching is forbidden; unrelated entries like `cst hook session-start --debug` are NOT treated as duplicates and must not prevent insertion.
-    - Appends `SessionStart` and `UserPromptSubmit` hook entries calling `cst hook session-start` / `cst hook activity` iff not already present per the rule above.
-    - Does NOT touch existing `statusLine` key. (Statusline wiring deferred to Sprint 2/3.)
-  - **Malformed settings.json policy (choice (a), binding):** if `~/.claude/settings.json` exists but is not parseable as JSON, the installer prints a clear error message naming the file and the parse error, exits with code 2, and does NOT modify the file or write a backup. This is intentionally conservative: a user with a hand-edited broken file gets a chance to repair it before automation touches it. (Rationale: silent rewrite is unsafe; automatic backup adds complexity without eliminating the need for the user to fix their file.)
-  - Smoke test at end: runs `cst list` via its absolute path and reports exit code; installer exits non-zero if smoke test fails.
-  - Satisfies DoD: *"Running the installer exactly once exposes a working `cst` command ..."*, *"Running the installer a second time produces no duplicate hook entries ..."*, *"After install, `cst list` exits 0 ..."*
+### 2.2 Scanner progress extraction
+
+`scanner.py` gains an `_extract_progress(jsonl_path, cwd)` helper that,
+given a transcript file:
+
+1. Streams the file and keeps a rolling window of the last 50 non-empty
+   JSONL lines (bounded to avoid loading huge transcripts fully). The
+   window contains EXACTLY the last 50 non-empty lines when the
+   transcript has ≥ 50 non-empty lines, and all of them otherwise.
+2. From this tail:
+   - `last_user_prompt` = text of the most recent `type == "user"`
+     line's message content, first line, truncated.
+   - `last_assistant_summary` = text of the most recent
+     `type == "assistant"` line's message content, first line,
+     truncated. Supports both string content and content-part arrays
+     (`[{"type":"text","text":"..."}]` — tool_use parts are skipped
+     for the summary, only text parts are joined).
+   - `current_task_hint` = built from the most recent `tool_use`
+     content-part anywhere in the tail window, per the rules in §2.1.
+3. **"Fresher wins" rule for `last_user_prompt` (binding — option (b)
+   from amendment §11.5).** The scanner overwrites
+   `last_user_prompt` only when ALL of the following hold:
+   (i) the extracted value is a non-empty string;
+   (ii) it differs from the stored `last_user_prompt`;
+   (iii) the transcript file's mtime (as an aware UTC datetime) is
+   strictly newer than the record's stored `last_activity_at`.
+   The hook path (§2.3) always bumps `last_activity_at` to "now"
+   when it writes the prompt, so a hook-written prompt is protected
+   until a later transcript actually contains a newer user line
+   that Claude Code has flushed to disk. When any of the three
+   conditions is false, the stored `last_user_prompt` is preserved
+   verbatim.
+4. `last_assistant_summary` and `current_task_hint` are ALWAYS
+   overwritten by the scanner on every pass (they have no hook
+   writer, so "fresher wins" is trivially "scanner wins"). This
+   matches §2.1's scanner-owned contract.
+
+Error isolation: any decode / unicode / key error while extracting
+progress from a single transcript MUST NOT crash the scan. It logs one
+warning line to `~/.claude/claude-tasks/.scanner-errors.log` and leaves
+all three fields unchanged from their prior values.
+
+**Unicode / non-UTF-8 handling (binding).** The file is opened with
+`encoding="utf-8", errors="replace"` so a bad byte yields U+FFFD but
+never raises. Truncation operates on Python string code points, not
+bytes, so a multi-byte CJK prompt is truncated at the correct
+character boundary and the `"…"` suffix remains a single code point.
+
+### 2.3 Hook-driven progress refresh
+
+`cst hook activity` (UserPromptSubmit) is enhanced: in addition to
+bumping `last_activity_at`, it now:
+
+- Parses stdin JSON payload FIRST (Sprint 1 contract is preserved).
+- If the payload includes a `prompt` or `user_prompt` string field
+  (Claude Code's UserPromptSubmit hook payload — see risk §10.1),
+  write it into `last_user_prompt` (truncated to 100 chars + `"…"`).
+  When both scanner and hook populate `last_user_prompt`, the
+  **fresher write wins** (whichever runs last). We do not tie-break;
+  this is acceptable because both signals represent the same
+  underlying fact and Claude Code triggers the hook before the
+  scanner sees the new JSONL line in the common case.
+- Never writes `last_assistant_summary` or `current_task_hint` from a
+  hook (those require the transcript; the scanner remains the sole
+  source).
+- **Unknown session_id behavior (binding — option (a) from amendment
+  §11.7).** When the record for `session_id` does not yet exist on
+  disk, the hook CREATES a skeleton record containing just the
+  normally-defaulted fields from `new_record(sid)` plus
+  `last_activity_at = now` and — when the payload supplied one —
+  the truncated `last_user_prompt`. Rationale: Sprint 1's
+  session-start hook already creates on first sight; if that hook
+  missed for any reason, the activity hook's create-skeleton path is
+  a cheap safety net so the user's next `cst list` still shows the
+  session. The skeleton has `auto_detected=True`, empty
+  `cwd`/`project_name`, and null `terminal.*` — the next scanner or
+  session-start hook fills them in. Tested by
+  `test_activity_hook_on_unknown_session_id`.
+- Exits 0 on failure per Sprint 1 contract; the registry must remain
+  consistent (no partial writes).
+
+Satisfies DoD: *"After a user submits a prompt in a Claude Code
+session, `cst list` within roughly 2 seconds shows that prompt's
+text …"*.
+
+### 2.4 `cst list` multi-line display + `--compact`
+
+Default (no `--compact`):
+
+- Headline row exactly as Sprint 1, extended with a new leading
+  **live dot** column (see §2.5):
+  `<dot>\t<short_id>\t<priority>\t<status>\t<title>\t<project_name>\t<relative_time>`
+- If `last_user_prompt` is non-empty, emit a sub-row:
+  `\t⤷ <last_user_prompt>`  (leading tab for indent; marker `⤷` is
+  U+2937).
+- If `current_task_hint` is non-empty, emit a sub-row:
+  `\t⚙ <current_task_hint>`  (`⚙` is U+2699).
+- Empty sub-rows are OMITTED entirely (not rendered as blank lines).
+- `last_assistant_summary` is NOT shown in `cst list` — it is watch-TUI
+  (Sprint 3) only. This is per spec §6.1 vs §6.2.
+
+`--compact` returns to a single-line-per-session format identical to
+Sprint 1's output **extended only with the new live dot column**.
+No sub-rows. Binding: a grep for any of `⤷`, `⚙`, or a second line
+per session MUST find zero occurrences under `--compact`.
+
+`--json` (already a Sprint 1 deliverable) gains four new keys per
+record: `last_user_prompt`, `last_assistant_summary`,
+`current_task_hint`, `live`. Schema compatibility: all pre-existing
+keys remain present.
+
+Stale banner: when any session in the result set has derived state
+`stale`, a footer line
+`⚠ N stale sessions — run 'cst review-stale'` is appended to stdout
+after the rows. Under `--json` the footer is omitted; callers can
+derive the count themselves.
+
+Satisfies DoD: *"cst list rows are ordered by priority (high → low)
+then by most-recent activity"* (unchanged), *"A session whose last
+activity is set to 5 hours ago is shown as stale in cst list"*,
+*"A footer banner appears in cst list whenever any stale sessions
+exist"*, *"cst list --compact returns to a single-line-per-session
+format"*, *"cst list … within roughly 2 seconds shows that prompt's
+text (truncated to ~100 chars) as a dim ⤷ … sub-row"*.
+
+### 2.5 Live-vs-idle dot
+
+`●` when a `claude` process is currently attached to the record's
+`terminal.tty`; `○` otherwise.
+
+Detection via `ps -o pid,tty,comm -A` (macOS-compatible), invoked
+once per list invocation (cached for the lifetime of the process).
+
+**`ps` output parsing rule (binding).** Every line after the header
+is parsed via `line.split(None, 2)` — i.e. split on whitespace into
+at most 3 parts. The three columns are interpreted as:
+
+1. `pid` — must match `^[0-9]+$`; lines that don't are skipped.
+2. `tty` — the short tty name. Interpreted per these cases:
+   - Literal `?`, `??`, or `-` → the process has no controlling
+     tty, skip.
+   - `ttysNNN` / `ttyN` / `pts/NNN` → prepend `/dev/` to form the
+     absolute device path.
+   - Already starts with `/dev/` → used as-is.
+3. `comm` — the remainder of the line (may contain spaces because
+   `split(None, 2)` caps at 3 parts). We match by
+   `os.path.basename(comm.rstrip()) == "claude"`. Note this matches
+   only when the command's basename is literally `claude` — a
+   process running `node /path/claude-cli.js` has basename `node`
+   and is NOT matched.
+
+Fallbacks:
+
+- When a record's `terminal.tty` is null / empty → render `○`
+  unconditionally.
+- `subprocess` failure (missing binary, non-zero exit, timeout,
+  decode error) → the entire listing silently degrades to `○` for
+  every row; a single log line is appended to `.scanner-errors.log`.
+- A listing must NEVER fail because of `ps` problems.
+
+Added to `--json` as boolean `"live"`.
+
+Satisfies DoD: *"Rows whose tty has a live `claude` process are
+marked live; others are marked idle."*
+
+### 2.6 Stale detection + `cst review-stale`
+
+Stale is a **derived, view-only** state. It is computed at list time,
+never stored.
+
+Rule: `stale == (not archived) and (status in {in_progress, blocked,
+waiting}) and (now - last_activity_at > stale_threshold)`.
+
+- Threshold source (in order): `CST_STALE_THRESHOLD_SECONDS` env var
+  (tests), then the config file (§2.10), then default 4 hours
+  (14400 seconds).
+- `cst list --stale` filters to stale rows only.
+- `cst list` (default) displays the word `stale` in the status column
+  for stale rows, even though their stored `status` is one of the
+  active values. Binding: when a row is stale, the displayed status
+  string is literally `stale`; the underlying stored `status` is
+  unchanged on disk.
+
+`cst review-stale`:
+
+- Reads stdin one line at a time, presenting each stale session in
+  order (priority then recency). For each:
+  - Prints `[N/M] <short_id> <title> (<project>) — idle <relative>`
+    followed by a prompt `keep/done/archive/skip [k/d/a/s]:`.
+  - Reads one line from stdin. Case-insensitive. Accepts
+    `k|keep|K`, `d|done|D`, `a|archive|A`, `s|skip|S`. Anything else
+    re-prompts the same session (up to 3 times, then skips to avoid
+    infinite loops in broken scripts).
+- Actions:
+  - `keep` / `skip`: binding — record file must be byte-identical
+    before and after (SHA256 in tests).
+  - `done`: sets `status=done`, flips `auto_detected=false`.
+  - `archive`: sets `archived=true`, `archived_at=now`.
+- Exits 0 when all stale sessions are reviewed; exits 0 with a "no
+  stale sessions" message when there are none.
+- Non-interactive mode: when stdin is not a TTY and no input remains,
+  the command treats the remaining sessions as `skip` and exits 0.
+
+Satisfies DoD: *"A session whose last activity is set to 5 hours ago
+is shown as stale"*, *"`cst review-stale` presents each stale session
+in turn and accepts keep / done / archive / skip; choosing "skip" or
+"keep" never modifies the record"*, *"No code path ever transitions
+a session to archived or deletes a record without explicit user
+action"*.
+
+### 2.7 Short-id prefix matching (≥6 chars)
+
+Every CLI path that takes a session id (`set`, `done`, `archive`,
+`focus`, `resume`) now accepts a prefix of the UUID ≥ 6 characters.
+
+Resolution rules (binding):
+
+- Exact full-UUID match still takes precedence (zero ambiguity
+  possible).
+- Prefix < 6 chars: error `cst: session id must be the full UUID or a
+  prefix of at least 6 hex characters` → exit 2 (distinct from
+  "not found" to catch user typos).
+- Prefix ≥ 6, matches exactly one record → success.
+- Prefix ≥ 6, matches multiple records → exit 3, writes to stderr:
+  ```
+  cst: ambiguous prefix '<input>'; candidates:
+    <short_id>  <priority>  <title>  (<project>)
+    <short_id>  <priority>  <title>  (<project>)
+    ...
+  ```
+  **No record is mutated in the ambiguous case.** Tests assert the
+  registry is byte-identical before/after.
+- Prefix ≥ 6, matches zero records → exit 1
+  (`cst: no such session: <input>`).
+
+**Ordering (binding).** The prefix resolver runs BEFORE any
+command-specific side effect, for every subcommand that accepts
+an id: `set`, `done`, `archive`, `focus`, `resume`. In particular
+for `focus` and `resume` the resolver runs before the macOS
+platform guard of §2.11, so an ambiguous id on Linux exits 3
+(ambiguity) rather than 6 (platform). Tests cover both orders
+(`test_prefix_ambiguous_exits_3_and_does_not_mutate` is
+parametrized over all five subcommands).
+
+**Candidate list stability.** The candidate list emitted on
+ambiguity is sorted by priority (high→medium→low) then by
+`last_activity_at` desc — same order as `cst list`. This is the
+order tested in Check 12b.
+
+Satisfies DoD: *"Any command that accepts a session id accepts a 6+
+character prefix"*, *"An ambiguous prefix lists candidate sessions
+and exits non-zero without mutating anything."*
+
+### 2.8 `cst focus` and `cst resume`
+
+`cst focus <id>` (macOS only — see §2.11):
+
+- Resolves the record. Inspects `terminal.app`:
+  - `iTerm.app` or `iTerm2`: run
+    `osascript -e 'tell application "iTerm2" to select ...'` using
+    the stored `window_id` (int). If `window_id` is null, fall back
+    to activating iTerm2 only.
+  - `Apple_Terminal` or `Terminal`: run AppleScript targeting the
+    stored `window_id` + `tab_id` (either may be null — in which case
+    we just activate Terminal.app).
+  - `Ghostty`, `Alacritty`, `WezTerm`, `kitty`, or any unrecognised
+    `terminal.app`: print
+    `cst: focus unsupported for terminal '<app>'. Try: cst resume <short_id>`
+    to stderr, exit 4. Do not attempt any AppleScript.
+  - `terminal.app` missing / null: same "unsupported" message with
+    `<app>` shown as `unknown`.
+- osascript exit != 0: print
+  `cst: focus failed (<app> window may be closed). Try: cst resume <short_id>`
+  to stderr, exit 5.
+- Successful osascript: exit 0, no stdout.
+
+`cst resume <id>`:
+
+- Resolves the record. Must have a non-empty `cwd` — otherwise error
+  `cst: cannot resume: no cwd recorded for this session` exit 1.
+- Spawns a new iTerm2 window (default) that runs
+  `cd <cwd> && claude --resume <session_id>`. Implementation uses
+  `osascript` to create the window. When iTerm2 is not installed,
+  falls back to Terminal.app. When neither is available, prints
+  `cst: no supported terminal for resume; install iTerm2 or Terminal.app`
+  and exits 4.
+- The command does NOT wait for `claude` to start; it returns 0 as
+  soon as the AppleScript completes.
+
+**Prefix-resolution ordering (binding).** For BOTH `cst focus` and
+`cst resume` the execution order is:
+
+1. Parse argv; ensure id argument is present.
+2. Run the short-id resolver from §2.7. If it returns
+   `TOO_SHORT` → exit 2. `AMBIGUOUS` → exit 3 (print candidates).
+   `NOT_FOUND` → exit 1.
+3. Only after resolution succeeds, check the macOS platform guard
+   (§2.11). Non-darwin → exit 6.
+4. Only then inspect `terminal.app` and run AppleScript.
+
+This means an ambiguous prefix passed to `cst focus` on Linux still
+exits 3 (ambiguity), not 6 (platform) — because the user clearly
+typo'd and telling them the typo is more useful than a platform
+lecture. Tests cover both orders.
+
+**Pinned osascript templates (binding).** The production code
+generates exactly these strings via f-string interpolation. Tests
+assert byte-for-byte equality (modulo the interpolated values)
+against these templates. Drift in the template BREAKS a test.
+
+`focus.py` builds one `-e` argument (one full AppleScript program).
+`_run_osascript(args)` prepends `["osascript"]` and shells out.
+
+- **iTerm2 focus, `window_id` is a non-null int `W`:**
+  ```applescript
+  tell application "iTerm2"
+      activate
+      tell window id <W> to select
+  end tell
+  ```
+  (where `<W>` is the Python `int` interpolated as decimal digits
+  only — see "Escaping / injection hardening" below.)
+
+- **iTerm2 focus, `window_id` is null:**
+  ```applescript
+  tell application "iTerm2" to activate
+  ```
+
+- **Terminal.app focus, `window_id` is int `W` AND `tab_id` is int `T`:**
+  ```applescript
+  tell application "Terminal"
+      activate
+      set index of window id <W> to 1
+      tell window id <W> to set selected tab to tab <T>
+  end tell
+  ```
+
+- **Terminal.app focus, `window_id` is int `W`, `tab_id` is null:**
+  ```applescript
+  tell application "Terminal"
+      activate
+      set index of window id <W> to 1
+  end tell
+  ```
+
+- **Terminal.app focus, `window_id` is null:**
+  ```applescript
+  tell application "Terminal" to activate
+  ```
+
+`resume.py`:
+
+- **iTerm2 resume** (preferred; iTerm2 detected by
+  `osascript -e 'id of application "iTerm2"'` probe returning 0):
+  ```applescript
+  tell application "iTerm2"
+      activate
+      create window with default profile
+      tell current session of current window
+          write text <SHELL_CMD>
+      end tell
+  end tell
+  ```
+  where `<SHELL_CMD>` is the AppleScript-quoted form (see below) of
+  the POSIX shell command:
+  ```
+  cd <CWD_SHELL_Q> && claude --resume <SID_SHELL_Q>
+  ```
+
+- **Terminal.app resume** (fallback when iTerm2 not detected):
+  ```applescript
+  tell application "Terminal"
+      activate
+      do script <SHELL_CMD>
+  end tell
+  ```
+  with the same `<SHELL_CMD>` building rule.
+
+**Escaping / injection hardening (binding).** Two distinct quoting
+layers apply and are NOT interchangeable:
+
+1. **POSIX shell layer** — used for `<CWD_SHELL_Q>` and
+   `<SID_SHELL_Q>` inside the `cd ... && claude --resume ...` string.
+   Built via Python's `shlex.quote(value)`. This produces
+   `'<value>'` with any embedded `'` replaced by `'"'"'`. Example:
+   a cwd of `/tmp/a b"c` yields `'/tmp/a b"c'`. No backticks, no
+   `$(...)`, no command substitution can survive.
+
+2. **AppleScript string literal layer** — wraps the entire
+   shell-command string as an AppleScript quoted literal. Built by:
+   `'"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'`.
+   The only two characters AppleScript escapes inside a quoted
+   string literal are `\` and `"`, in that order. Newlines in the
+   value are forbidden (validation raises before AppleScript
+   construction); a session_id is validated to match
+   `^[0-9a-f-]{36}$` and a cwd is validated to be an absolute path
+   string with no embedded `\x00` or newline.
+
+3. **`window_id` and `tab_id` integer hardening** — before
+   interpolation into the template, the code calls `int(value)` and
+   formats via `f"{n:d}"`. Any non-int (including strings, floats,
+   booleans) raises `TypeError` / `ValueError` which `focus.py`
+   catches and surfaces as
+   `cst: focus failed (corrupt window_id in record). Try: cst resume <short_id>`
+   exit 5. There is no code path that interpolates an
+   un-int-validated value into the AppleScript body.
+
+**Testability.** AppleScript invocation is behind a thin
+`_run_osascript(args: list[str]) -> int` function that tests
+monkeypatch to a capturing no-op (returns 0 by default; tests can
+configure it to return non-zero to exercise failure paths). Tests
+then assert the captured `args[-1]` (the AppleScript program
+string) matches the templates above either by exact string equality
+or by a compiled regex that allows only the interpolated `<W>` /
+`<T>` / `<SHELL_CMD>` slots to vary.
+
+Satisfies DoD: *"cst focus brings the other's window to the front"*
+(exercised by test using monkeypatched osascript), *"When the owning
+window no longer exists, cst focus does NOT silently fail"*, *"On an
+unsupported terminal app, cst focus reports the limitation and offers
+cst resume"*, *"cst resume opens a new terminal window, cd's into the
+session's cwd, and starts Claude Code with resume against the correct
+session"*.
+
+### 2.9 `cst statusline` + installer wiring
+
+`cst statusline`:
+
+- Reads the registry (no JSONL scan, no ps) and computes:
+  - `pending = len(records where not archived and status in {in_progress, blocked, waiting})`
+  - `stale = len(records satisfying the stale predicate)`
+- Emits exactly one line to stdout:
+  - `📋 <pending> pending  →  /tasks` when `stale == 0 and pending > 0`
+  - `📋 <pending> pending · <stale> stale  →  /tasks` when `stale > 0 and pending > 0`
+  - Empty line (newline only) when `pending == 0 and stale == 0` —
+    per spec, the statusline is shown only "whenever there is at
+    least one pending session"; we still exit 0.
+- Performance budget (binding): must complete in ≤ 150 ms on a
+  registry of 200 records (pytest timing test seeds 200 records and
+  asserts wall time < 0.15 s). No subprocess calls, no network, no
+  JSONL parsing.
+
+Installer wiring (idempotent, policy-aware):
+
+- If `settings.json` has no `statusLine` key: set
+  `"statusLine": {"type": "command", "command": "cst statusline", "padding": 0}`.
+- If `settings.json` already has a `statusLine` key whose `command`
+  equals `"cst statusline"` (exact string match): no-op.
+- If `settings.json` already has any other `statusLine`: do NOT
+  overwrite. Print a warning containing the literal phrase
+  `existing statusline` to stdout plus the shell snippet the user can
+  add to their own statusline wrapper to append `$(cst statusline)`.
+- Malformed `settings.json` continues to trigger Sprint 1 policy (a):
+  exit 2, no write, no backup.
+
+Satisfies DoD: *"The Claude Code statusline displays 📋 N pending …"*,
+*"The statusline call returns quickly enough not to visibly delay …"*,
+*"The statusline command never performs network I/O or heavyweight
+parsing"*, and the non-goal *"Silent overwrite of an existing user
+statusline configuration"*.
+
+### 2.10 Config file for stale threshold
+
+Location: `~/.claude/claude-tasks.config.json`. Overridable via
+`CST_CONFIG_PATH` env var for tests.
+
+Format:
+```json
+{ "stale_threshold_seconds": 3600 }
+```
+
+Only one key is honored this sprint. Loader rules:
+
+- Missing file → default 14400 seconds.
+- File is empty or `{}` → default.
+- File parses but lacks `stale_threshold_seconds` → default.
+- `stale_threshold_seconds` is not an int (bool / float / str / null /
+  list / dict) → default; log one warning to `.scanner-errors.log`
+  (same log file used by §2.2). Binding: `bool` is rejected even
+  though `isinstance(True, int)` is `True` in Python — the loader
+  uses `type(v) is int`.
+- `stale_threshold_seconds` is an int ≤ 0 (i.e. `0`, `-1`, any
+  negative) → default; log one warning. Binding: the threshold must
+  be strictly positive to be honored.
+- Malformed JSON → default; log one warning. Binding: `cst list`
+  MUST NEVER fail because of a malformed config file.
+
+Precedence: `CST_STALE_THRESHOLD_SECONDS` env var (tests only) >
+config file > default.
+
+Satisfies DoD: *"The user can override the stale threshold via a
+single local config value; setting it to 1 hour causes a session idle
+for 90 minutes to be flagged stale on the next list."*
+
+### 2.11 macOS platform guard
+
+Applies to `cst focus` and `cst resume` only. All other subcommands
+remain cross-platform (they are stdlib-only and do not touch
+AppleScript / `ps` in a macOS-specific way — `ps` on Linux supports
+the same `-o pid,tty,comm -A` form but the live-dot detection is
+allowed to degrade to `○` silently on non-macOS, per §2.5).
+
+Rule:
+- `cst focus` and `cst resume` check `sys.platform == "darwin"`
+  first. If not darwin, print
+  `cst: <subcommand> is only supported on macOS (detected: <platform>)`
+  to stderr and exit 6.
+- All other subcommands remain platform-agnostic.
+
+Tests drive the non-darwin branch via `CST_FORCE_PLATFORM=linux` on
+the environment.
+
+Satisfies DoD: *"Everything works on macOS. The tool is permitted to
+refuse to run on non-macOS platforms with a clear message."*
+
+### 2.12 `cst gc`
+
+- Scans the registry.
+- For each record where `archived is True` and `archived_at` is an
+  ISO-8601 UTC timestamp older than 7 days (604800 seconds), delete
+  the file via `os.unlink`. Records that are not archived are
+  **never** touched.
+- Binding: age is computed from the stored `archived_at`; file mtime
+  is ignored.
+- Prints `cst gc: deleted N record(s); kept M archived record(s)
+  still within the 7-day window`. Non-archived records are not
+  reported in the summary.
+- Exit 0 on success (including "nothing deleted"). Exit 1 on I/O
+  error — message to stderr, and the scan completes as much as
+  possible (a single failed unlink does not abort the pass;
+  remaining files are still processed and the final exit is 1).
+- Unparseable `archived_at` → skip the record, log one line to
+  `.scanner-errors.log`, do NOT delete.
+
+Satisfies DoD: *"cst gc deletes only records whose archived_at is
+older than 7 days and never touches any other record"*, *"No
+background process, hook, or scan ever deletes a record"*.
 
 ## 3. Features explicitly deferred
 
 | Feature | Target sprint |
 |---|---|
-| `cst focus` / AppleScript per-terminal support | Sprint 2 |
-| `cst resume` (new terminal + `claude --resume`) | Sprint 2 |
-| `cst statusline` + statusline installer wiring | Sprint 2 |
-| Live-vs-idle dot (ps/tty matching) in `cst list` | Sprint 2 |
-| Stale detection banner in list + `cst review-stale` | Sprint 2 |
 | Slash commands (`/tasks`, `/task-register`, `/task-note`, `/task-priority`, `/task-status`, `/task-done`, `/task-focus`) | Sprint 3 |
-| `cst watch` TUI (rich-based) | Sprint 3 |
-| `cst watch --pin` dedicated window | Sprint 4 |
-| `cst gc` (7-day archived deletion) | Sprint 2 |
-| Short-id prefix matching ≥6 chars with ambiguity handling | Sprint 2 |
-| Config file for stale threshold (`~/.claude/claude-tasks.config.json`) | Sprint 2 |
-| macOS-only platform guard | Sprint 2 |
+| `cst watch` TUI (rich-based) incl. detail panel with full progress fields | Sprint 3 |
+| `cst watch --pin` dedicated small window | Sprint 3 |
 
-Sprint 1 accepts full-length `session_id` only; any other id format returns a "not found" error.
+Rationale: slash commands are thin wrappers around the already-built
+CLI, but they require shipping `commands/*.md` files and an install
+step that writes them into the skill; they naturally belong with the
+watch TUI which is the remaining "inside / TUI" theme. Sprint 2
+deliberately focuses on headless CLI + infra so every Sprint 3
+surface builds on a stable foundation.
+
+(Focus / resume / statusline are IN Sprint 2 despite one reading of
+them as "inside Claude Code" — they are invoked by the user, CLI-
+shaped, and unlock the Sprint 2 "daily driver" promise. The slash
+commands remain deferred because they require `commands/*.md`
+shipping and an installer merge story that pairs well with the TUI
+work.)
 
 ## 4. How to run
 
-All commands assume the Evaluator `cd`s into this skill directory first.
+All commands assume `cd` into the skill dir and a sandbox HOME unless
+stated otherwise.
 
-### 4.1 Install
+### 4.1 Install (idempotent; picks up Sprint 2 changes)
 
 ```bash
 bash install.sh
 ```
 
-Expected: exit 0; prints a "smoke test PASSED" line; creates `~/.local/bin/cst`, `~/.claude/skills/claude-session-manager` symlink, `~/.claude/claude-tasks/` dir, and inserts hook entries into `~/.claude/settings.json`.
+Expected additions vs Sprint 1:
+- Exactly one `cst statusline` entry in `settings.json.statusLine`
+  (unless a competing one already exists, in which case a warning is
+  printed and the existing value is preserved).
+- `~/.claude/claude-tasks.config.json` is NOT auto-created; it is
+  strictly opt-in.
 
-Rerunning the same command must also exit 0 and must not duplicate hook entries.
-
-### 4.2 Exercise the CLI directly
-
-```bash
-# With a freshly installed, empty registry:
-cst list                               # exits 0, prints "(no sessions)"
-cst scan                               # scans ~/.claude/projects/, prints summary
-
-# Manually inject a fake session record by invoking the hook the way Claude Code will:
-CLAUDE_SESSION_ID=11111111-1111-1111-1111-111111111111 \
-  CLAUDE_PROJECT_DIR=/tmp/fake-proj \
-  cst hook session-start
-
-cst list                               # shows one row for that session
-cst set 11111111-1111-1111-1111-111111111111 --title "Demo" --priority high
-cst list                               # row now shows title "Demo" and priority high
-
-# Touch activity:
-CLAUDE_SESSION_ID=11111111-1111-1111-1111-111111111111 \
-  cst hook activity
-cst list                               # last_activity relative-time is ~0s
-
-cst done    11111111-1111-1111-1111-111111111111   # status→done, still visible
-cst archive 11111111-1111-1111-1111-111111111111   # hidden from default list
-cst list                               # no rows
-cst list --all                         # archived row reappears
-```
-
-### 4.3 Simulate a Claude Code session WITHOUT running `claude`
-
-The Evaluator creates a fake project transcript:
+### 4.2 Simulate progress-capture end-to-end
 
 ```bash
-mkdir -p ~/.claude/projects/-tmp-fake-proj
-SID="22222222-2222-2222-2222-222222222222"
-cat > ~/.claude/projects/-tmp-fake-proj/${SID}.jsonl <<'EOF'
-{"type":"user","message":{"role":"user","content":"Refactor the login endpoint"},"cwd":"/tmp/fake-proj","sessionId":"22222222-2222-2222-2222-222222222222"}
+SID="66666666-6666-6666-6666-666666666666"
+mkdir -p ~/.claude/projects/-tmp-demo
+cat > ~/.claude/projects/-tmp-demo/${SID}.jsonl <<'EOF'
+{"type":"user","message":{"content":"Please run the test suite"},"cwd":"/tmp/demo"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Running the tests now."},{"type":"tool_use","name":"Bash","input":{"command":"pytest -q tests/"}}]}}
 EOF
 cst scan
-cst list                               # shows a row with title starting "Refactor the login endpoint"
+cst list            # multi-line: ⤷ prompt, ⚙ Running: pytest -q tests/
+cst list --compact  # single line per session, no ⤷ / ⚙
+cst list --json     # includes last_user_prompt, last_assistant_summary, current_task_hint, live
 ```
 
-### 4.4 Trigger hooks the way Claude Code would
+### 4.3 Trigger the UserPromptSubmit hook with a prompt payload
 
-The installer wires `~/.claude/settings.json` such that `SessionStart` and `UserPromptSubmit` run `cst hook ...`. The Evaluator can verify this by inspecting settings.json (see check 4 below) or by invoking the commands manually with the same env vars Claude Code sets.
+```bash
+echo '{"session_id":"'"$SID"'","hook_event_name":"UserPromptSubmit","prompt":"Now also add a fixture"}' \
+    | cst hook activity
+cst list --json | python3 -c "import sys,json; r=json.load(sys.stdin); print([x['last_user_prompt'] for x in r if x['session_id']==\"$SID\"])"
+# Expect: ['Now also add a fixture']
+```
+
+### 4.4 Stale triage
+
+```bash
+python3 -c "
+import json, pathlib, os, datetime
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json')
+r = json.loads(p.read_text())
+r['last_activity_at'] = (datetime.datetime.now(datetime.timezone.utc)
+    - datetime.timedelta(hours=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+p.write_text(json.dumps(r))
+"
+cst list             # banner: ⚠ 1 stale sessions
+cst list --stale     # only that row
+echo "skip" | cst review-stale   # non-interactive skip
+```
+
+### 4.5 Short-id prefix
+
+```bash
+cst set 66666666 --priority high      # 8-char prefix exact
+cst set 66 --priority low             # exit 2, "must be ≥6 chars"
+# Seed a second session sharing a prefix, then:
+cst set 666666 --priority high        # exit 3, lists candidates
+```
+
+### 4.6 Focus / resume (macOS)
+
+On a macOS machine with iTerm2 running:
+
+```bash
+cst focus 66666666
+cst resume 66666666
+```
+
+Tests monkeypatch `_run_osascript`; no AppleScript actually runs in
+CI.
+
+### 4.7 Statusline
+
+```bash
+cst statusline          # "📋 2 pending" or "📋 2 pending · 1 stale  →  /tasks"
+time cst statusline     # must be < 150 ms on 200 records
+```
+
+### 4.8 GC
+
+```bash
+cst archive 66666666
+# artificially age archived_at to 8 days ago, then:
+cst gc                  # deletes the file
+```
 
 ## 5. Observable verification checks
 
-Each check is stricter than the relevant DoD bullet.
+Each check is stricter than the corresponding DoD bullet. All
+commands assume a fresh `HOME=$(mktemp -d)` sandbox with `bash
+install.sh` already run and `~/.local/bin` on PATH.
 
-### Check 1 — Installer is idempotent and wires hooks exactly once
+**Numbering note.** To minimize diff against the prior draft, new
+checks from the Evaluator amendments are added in-place:
+- Check 12b — ambiguous prefix on every subcommand (amendment §11.3).
+- Check 21b — `cst gc` on empty / all-non-archived registry (§11.4).
+- Checks 28, 29, 30 — inserted AFTER Check 26 and BEFORE Check 27
+  (the Sprint-1 regression check that deliberately remains last).
+  28 covers unicode display (§11.8), 29 covers "fresher wins"
+  (§11.5), 30 covers config loader rejecting zero / negative / bool
+  (§11.11).
+
+All existing Check 1–27 numbers are preserved.
+
+### Check 1 — Scanner extracts and WRITES all three progress fields
 
 ```bash
-bash install.sh
-bash install.sh
+SID=66666666-6666-6666-6666-666666666666
+mkdir -p "$HOME/.claude/projects/-tmp-demo"
+cat > "$HOME/.claude/projects/-tmp-demo/${SID}.jsonl" <<'EOF'
+{"type":"user","message":{"content":"Please run the test suite and fix the failures"},"cwd":"/tmp/demo"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"OK. First I will run pytest."},{"type":"tool_use","name":"Bash","input":{"command":"pytest -q tests/"}}]}}
+EOF
+cst scan >/dev/null
 python3 -c "
-import json, pathlib
-s = json.loads(pathlib.Path.home().joinpath('.claude/settings.json').read_text())
-hooks = s.get('hooks', {})
-ss_cmds = [h['command'] for m in hooks.get('SessionStart', []) for h in m.get('hooks', [])]
-up_cmds = [h['command'] for m in hooks.get('UserPromptSubmit', []) for h in m.get('hooks', [])]
-# Exact full-string equality — substring matching is not sufficient.
-assert ss_cmds.count('cst hook session-start') == 1, ss_cmds
-assert up_cmds.count('cst hook activity') == 1, up_cmds
-print('HOOKS_OK')
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+assert r['last_user_prompt'].startswith('Please run the test suite'), r
+assert r['last_assistant_summary'].startswith('OK. First I will run pytest'), r
+assert r['current_task_hint'] == 'Running: pytest -q tests/', r
+print('PROGRESS_EXTRACT_OK')
 "
 ```
+**Expected:** prints `PROGRESS_EXTRACT_OK`.
 
-**Expected**: prints `HOOKS_OK` and exits 0.
-
-### Check 2 — `cst list` on empty registry
-
-```bash
-rm -rf ~/.claude/claude-tasks && mkdir -p ~/.claude/claude-tasks
-cst list; echo "exit=$?"
-```
-
-**Expected**: exit 0, output does not crash or raise, clearly indicates zero rows (e.g. `(no sessions)` or empty table).
-
-### Check 3 — Scanner creates records from a fixture JSONL
+### Check 2 — Scanner ALWAYS overwrites progress fields (auto_detected=false does NOT protect them)
 
 ```bash
-# (setup from 4.3 above)
-cst scan
-ls ~/.claude/claude-tasks/22222222-2222-2222-2222-222222222222.json
+cst set $SID --title "User Title" --priority high   # flips auto_detected=false
+# Overwrite progress fields with garbage values on disk:
 python3 -c "
-import json, pathlib
-r = json.loads(pathlib.Path.home().joinpath('.claude/claude-tasks/22222222-2222-2222-2222-222222222222.json').read_text())
-assert r['session_id'] == '22222222-2222-2222-2222-222222222222'
-assert r['auto_detected'] is True
-assert r['title'] and len(r['title']) <= 60
-assert r['archived'] is False
-print('SCAN_OK', r['title'])
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json')
+r = json.loads(p.read_text())
+r['last_user_prompt'] = 'GARBAGE'
+r['last_assistant_summary'] = 'GARBAGE'
+r['current_task_hint'] = 'GARBAGE'
+p.write_text(json.dumps(r))
+"
+cst scan >/dev/null
+python3 -c "
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+assert r['title'] == 'User Title', r     # user-owned: preserved
+assert r['priority'] == 'high', r         # user-owned: preserved
+assert r['last_user_prompt'] != 'GARBAGE', r
+assert r['last_assistant_summary'] != 'GARBAGE', r
+assert r['current_task_hint'] == 'Running: pytest -q tests/', r
+print('SCANNER_OVERWRITES_PROGRESS_OK')
 "
 ```
+**Expected:** prints `SCANNER_OVERWRITES_PROGRESS_OK`.
 
-**Expected**: prints `SCAN_OK <title>`, with a non-empty title derived from the first user message.
-
-### Check 4 — User edit is sticky across subsequent scans (title, priority, status, note, tags)
+### Check 3 — Truncation to 100 chars with single `…` code point
 
 ```bash
-cst set 22222222-2222-2222-2222-222222222222 \
-    --title "User Title" --priority high --status blocked \
-    --note "keep me" --tags a,b
-cst scan
 python3 -c "
-import json, pathlib
-r = json.loads(pathlib.Path.home().joinpath('.claude/claude-tasks/22222222-2222-2222-2222-222222222222.json').read_text())
-assert r['title'] == 'User Title', r
-assert r['priority'] == 'high', r
-assert r['status'] == 'blocked', r
-assert r['note'] == 'keep me', r
-assert r['tags'] == ['a','b'], r
-assert r['auto_detected'] is False, r
-print('STICKY_OK')
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+big = 'X' * 500
+p.parent.mkdir(parents=True, exist_ok=True)
+with p.open('w') as f:
+    f.write(json.dumps({'type':'user','message':{'content': big},'cwd':'/tmp/demo'}) + '\n')
+"
+cst scan >/dev/null
+python3 -c "
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+p = r['last_user_prompt']
+assert len(p) == 100, (len(p), p)
+assert p.endswith('\u2026'), repr(p)
+assert p.count('\u2026') == 1, p
+print('TRUNCATION_OK')
 "
 ```
+**Expected:** prints `TRUNCATION_OK`.
 
-**Expected**: prints `STICKY_OK`. The scanner must not overwrite any of `title`, `priority`, `status`, `note`, `tags` once `auto_detected=false`.
-
-### Check 5 — Corrupt file isolation (and original bytes preserved)
-
-```bash
-orig_bytes='{this is not valid json'
-printf '%s' "$orig_bytes" > ~/.claude/claude-tasks/badfile.json
-cst list > /tmp/cst_list_out.txt; echo "exit=$?"
-# Good siblings must still render:
-grep -q 22222222 /tmp/cst_list_out.txt || { echo FAIL_GOOD_SIBLING_MISSING; exit 1; }
-renamed=$(ls ~/.claude/claude-tasks/ | grep -E '^badfile\.json\.corrupt-[0-9]+$' | head -n1)
-test -n "$renamed" || { echo FAIL_NO_RENAME; exit 1; }
-# Bytes must be byte-identical to what we wrote:
-got=$(cat "$HOME/.claude/claude-tasks/$renamed")
-[ "$got" = "$orig_bytes" ] || { echo FAIL_BYTES_CHANGED; exit 1; }
-echo CORRUPT_BYTES_PRESERVED
-```
-
-**Expected**: `cst list` exits 0, good sibling rows still render, the bad file is renamed to `badfile.json.corrupt-<timestamp>`, and the renamed file's bytes are byte-identical to the original malformed content.
-
-### Check 6 — Hook exit code is 0 even on failure, and the error is logged
+### Check 4 — Unicode / CJK prompt truncates on code-point boundaries
 
 ```bash
-: > ~/.claude/claude-tasks/.hook-errors.log 2>/dev/null || true
-rm -f ~/.claude/claude-tasks/.hook-errors.log
-# Invoke with no env vars AND no stdin payload; the hook must still exit 0
-env -i PATH="$PATH" cst hook session-start < /dev/null; rc1=$?
-env -i PATH="$PATH" cst hook activity       < /dev/null; rc2=$?
-[ "$rc1" = "0" ] && [ "$rc2" = "0" ] || { echo FAIL_EXIT_NONZERO; exit 1; }
-# Log file must exist and contain at least one recent entry naming the missing field / exception.
-test -s ~/.claude/claude-tasks/.hook-errors.log || { echo FAIL_LOG_MISSING; exit 1; }
 python3 -c "
-import pathlib, re, time, datetime
-txt = pathlib.Path.home().joinpath('.claude/claude-tasks/.hook-errors.log').read_text()
-assert txt.strip(), 'log empty'
-# Expect an ISO-8601 timestamp within last 60 seconds on at least one line.
-now = datetime.datetime.utcnow()
-fresh = False
-for line in txt.splitlines():
-    m = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', line)
-    if not m: continue
-    t = datetime.datetime.strptime(m.group(1), '%Y-%m-%dT%H:%M:%S')
-    if (now - t).total_seconds() < 60:
-        fresh = True; break
-assert fresh, 'no fresh timestamped line'
-assert 'session_id' in txt or 'Exception' in txt or 'KeyError' in txt or 'missing' in txt.lower()
-print('HOOK_LOG_OK')
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+big = '한' * 500   # 3-byte UTF-8 char, 1 code point each
+with p.open('w') as f:
+    f.write(json.dumps({'type':'user','message':{'content': big},'cwd':'/tmp/demo'}) + '\n')
+"
+cst scan >/dev/null
+python3 -c "
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+p = r['last_user_prompt']
+assert len(p) == 100, (len(p), p)
+assert p.endswith('\u2026')
+assert all(c == '한' for c in p[:99]), p[:10]
+print('CJK_TRUNCATION_OK')
 "
 ```
+**Expected:** prints `CJK_TRUNCATION_OK`.
 
-**Expected**: both hook invocations exit 0, `.hook-errors.log` exists, and contains at least one line timestamped within the last 60 seconds naming either the missing field or the exception class. Prints `HOOK_LOG_OK`.
-
-### Check 7 — Sort order is machine-checkable via `cst list --json`
-
-Seed three records with distinct priorities and activity times, then assert on parsed JSON:
+### Check 5 — Non-UTF-8 bytes do not crash the scanner
 
 ```bash
 python3 -c "
-import json, pathlib, datetime, os
-d = pathlib.Path(os.path.expanduser('~/.claude/claude-tasks'))
-d.mkdir(parents=True, exist_ok=True)
-def rec(sid, pri, ago_s, title):
-    ts = (datetime.datetime.utcnow() - datetime.timedelta(seconds=ago_s)).strftime('%Y-%m-%dT%H:%M:%SZ')
+import pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+p.write_bytes(b'{\"type\":\"user\",\"message\":{\"content\":\"ok \xff\xfe bad\"},\"cwd\":\"/tmp/demo\"}\n')
+"
+cst scan; rc=$?
+[ "$rc" = "0" ] || { echo "FAIL_SCAN_RC=$rc"; exit 1; }
+python3 -c "
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+assert isinstance(r['last_user_prompt'], str)
+assert 'ok' in r['last_user_prompt']
+print('NON_UTF8_OK')
+"
+```
+**Expected:** prints `NON_UTF8_OK` and exits 0.
+
+### Check 6 — `current_task_hint` variants (exhaustive)
+
+```bash
+python3 - <<'PY'
+import json, os, pathlib, subprocess
+SID = '66666666-6666-6666-6666-666666666666'
+home = pathlib.Path(os.environ['HOME'])
+proj = home / '.claude/projects/-tmp-demo'
+proj.mkdir(parents=True, exist_ok=True)
+cases = [
+    ('Bash',  {'command':'pytest -q'},        'Running: pytest -q'),
+    ('Edit',  {'file_path':'/tmp/demo/a.py'}, 'Editing: a.py'),
+    ('Write', {'file_path':'/tmp/demo/x.md'}, 'Editing: x.md'),
+    ('MultiEdit',    {'file_path':'/tmp/demo/m.py'}, 'Editing: m.py'),
+    ('NotebookEdit', {'file_path':'/tmp/demo/n.ipynb'}, 'Editing: n.ipynb'),
+    ('Read',  {'file_path':'/tmp/demo/b.py'}, 'Reading: b.py'),
+    ('Grep',  {'pattern':'TODO'},             'Searching: TODO'),
+    ('Glob',  {'pattern':'**/*.py'},          'Searching: **/*.py'),
+    ('UnknownTool', {}, 'UnknownTool'),
+    ('Bash',  {}, 'Bash'),   # missing distinguishing field → bare tool name
+]
+jf = proj / f'{SID}.jsonl'
+for tool, inp, expected in cases:
+    jf.write_text(
+        json.dumps({'type':'user','message':{'content':'q'},'cwd':'/tmp/demo'}) + '\n'
+        + json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','name':tool,'input':inp}]}}) + '\n'
+    )
+    subprocess.run(['cst','scan'], check=True, capture_output=True)
+    rec = json.loads((home / f'.claude/claude-tasks/{SID}.json').read_text())
+    assert rec['current_task_hint'] == expected, (tool, inp, rec['current_task_hint'], expected)
+# No tool_use at all → empty hint:
+jf.write_text(
+    json.dumps({'type':'user','message':{'content':'q'},'cwd':'/tmp/demo'}) + '\n'
+    + json.dumps({'type':'assistant','message':{'content':[{'type':'text','text':'just text'}]}}) + '\n'
+)
+subprocess.run(['cst','scan'], check=True, capture_output=True)
+rec = json.loads((home / f'.claude/claude-tasks/{SID}.json').read_text())
+assert rec['current_task_hint'] == '', rec['current_task_hint']
+print('TASK_HINT_OK')
+PY
+```
+**Expected:** prints `TASK_HINT_OK`.
+
+### Check 7 — Multi-line `cst list` renders `⤷` and `⚙`
+
+```bash
+python3 -c "
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+p.write_text(json.dumps({'type':'user','message':{'content':'Fix bug'},'cwd':'/tmp/demo'}) + '\n'
+             + json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','name':'Bash','input':{'command':'pytest -q'}}]}}) + '\n')
+"
+cst scan >/dev/null
+out=$(cst list)
+echo "$out" | grep -F '⤷ Fix bug' >/dev/null || { echo FAIL_NO_PROMPT_SUBROW; exit 1; }
+echo "$out" | grep -F '⚙ Running: pytest -q' >/dev/null || { echo FAIL_NO_HINT_SUBROW; exit 1; }
+echo MULTILINE_OK
+```
+**Expected:** prints `MULTILINE_OK`.
+
+### Check 8 — `--compact` strips all sub-rows; one line per session
+
+```bash
+out=$(cst list --compact)
+[ "$(echo "$out" | grep -c -F '⤷')" = "0" ] || { echo FAIL_PROMPT_LEAK; exit 1; }
+[ "$(echo "$out" | grep -c -F '⚙')" = "0" ] || { echo FAIL_HINT_LEAK; exit 1; }
+n_sessions=$(cst list --json | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+n_lines=$(echo "$out" | sed '/^$/d' | wc -l | tr -d ' ')
+[ "$n_sessions" = "$n_lines" ] || { echo "FAIL_ROW_COUNT: $n_sessions vs $n_lines"; exit 1; }
+echo COMPACT_OK
+```
+**Expected:** prints `COMPACT_OK`.
+
+### Check 9 — Hook writes `last_user_prompt` from stdin payload
+
+```bash
+echo '{"session_id":"'"$SID"'","hook_event_name":"UserPromptSubmit","prompt":"hook-provided prompt"}' \
+    | cst hook activity
+got=$(cst list --json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r['session_id'] == '${SID}':
+        print(r['last_user_prompt']); break
+")
+[ "$got" = "hook-provided prompt" ] || { echo "FAIL: got='$got'"; exit 1; }
+echo HOOK_PROMPT_OK
+```
+**Expected:** prints `HOOK_PROMPT_OK`.
+
+### Check 10 — Stale banner + filter + stored status UNCHANGED
+
+```bash
+python3 -c "
+import json, pathlib, os, datetime
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json')
+r = json.loads(p.read_text())
+r['status'] = 'in_progress'
+r['archived'] = False
+r['last_activity_at'] = (datetime.datetime.now(datetime.timezone.utc)
+    - datetime.timedelta(hours=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+p.write_text(json.dumps(r))
+"
+out=$(cst list)
+echo "$out" | grep -q '^⚠' || { echo FAIL_NO_BANNER; exit 1; }
+echo "$out" | grep -q 'stale' || { echo FAIL_NO_STALE_LABEL; exit 1; }
+cst list --stale | grep -q "${SID:0:8}" || { echo FAIL_STALE_FILTER; exit 1; }
+stored=$(python3 -c "
+import json, os, pathlib
+print(json.load(open(pathlib.Path(os.environ['HOME'],'.claude/claude-tasks/${SID}.json')))['status'])
+")
+[ "$stored" = "in_progress" ] || { echo "FAIL: status mutated to $stored"; exit 1; }
+echo STALE_OK
+```
+**Expected:** prints `STALE_OK`.
+
+### Check 11 — `cst review-stale` keep/skip is byte-identical; done mutates; 3-session ordering stable
+
+Phase A — single session (keep/skip byte-identical, done mutates):
+
+```bash
+before=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID}.json" | awk '{print $1}')
+printf 'keep\n' | cst review-stale
+after=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID}.json" | awk '{print $1}')
+[ "$before" = "$after" ] || { echo "FAIL: keep modified record ($before -> $after)"; exit 1; }
+printf 'skip\n' | cst review-stale
+after2=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID}.json" | awk '{print $1}')
+[ "$before" = "$after2" ] || { echo "FAIL: skip modified record"; exit 1; }
+printf 'done\n' | cst review-stale
+after3=$(python3 -c "
+import json, os, pathlib
+print(json.load(open(pathlib.Path(os.environ['HOME'],'.claude/claude-tasks/${SID}.json')))['status'])
+")
+[ "$after3" = "done" ] || { echo FAIL_DONE; exit 1; }
+```
+
+Phase B — three stale sessions, ordering + advancement (addresses
+amendment §11.12). Seed three fresh stale records with distinct
+priorities: A=high, B=medium, C=low; all aged 5h ago.
+
+```bash
+SID_RA=11110000-1111-1111-1111-111111111111   # high
+SID_RB=22220000-2222-2222-2222-222222222222   # medium
+SID_RC=33330000-3333-3333-3333-333333333333   # low
+python3 - <<'PY'
+import json, pathlib, os, datetime
+home = pathlib.Path(os.environ['HOME'])
+d = home / '.claude/claude-tasks'
+aged = (datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(hours=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+for sid, pri in [('11110000-1111-1111-1111-111111111111','high'),
+                 ('22220000-2222-2222-2222-222222222222','medium'),
+                 ('33330000-3333-3333-3333-333333333333','low')]:
     (d / f'{sid}.json').write_text(json.dumps({
-        'session_id': sid, 'title': title, 'priority': pri, 'status': 'in_progress',
-        'cwd': '/tmp/x', 'project_name': 'x', 'tags': [], 'note': '',
-        'created_at': ts, 'last_activity_at': ts,
+        'session_id': sid, 'title': f't-{pri}', 'priority': pri,
+        'status': 'in_progress', 'cwd': '/tmp', 'project_name': 'p',
+        'tags': [], 'note': '',
+        'created_at': aged, 'last_activity_at': aged,
+        'last_user_prompt': '', 'last_assistant_summary': '', 'current_task_hint': '',
         'terminal': {'app': None, 'window_id': None, 'tab_id': None, 'tty': None},
         'auto_detected': True, 'archived': False, 'archived_at': None,
     }))
-rec('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'medium', 10,  'M-recent')
-rec('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'high',   300, 'H-old')
-rec('cccccccc-cccc-cccc-cccc-cccccccccccc', 'high',   5,   'H-recent')
-rec('dddddddd-dddd-dddd-dddd-dddddddddddd', 'low',    1,   'L-newest')
-"
-cst list --json > /tmp/cst_list.json
+PY
+ha=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RA}.json" | awk '{print $1}')
+hb=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RB}.json" | awk '{print $1}')
+hc=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RC}.json" | awk '{print $1}')
+# Three "skip" lines: all three sessions presented, none mutated.
+out=$(printf 'skip\nskip\nskip\n' | cst review-stale)
+# Assert short_id prefixes appear in the exact priority order (A before B before C).
+pa=$(echo "$out" | grep -nE "(^|[^0-9a-f])${SID_RA:0:8}" | head -n1 | cut -d: -f1)
+pb=$(echo "$out" | grep -nE "(^|[^0-9a-f])${SID_RB:0:8}" | head -n1 | cut -d: -f1)
+pc=$(echo "$out" | grep -nE "(^|[^0-9a-f])${SID_RC:0:8}" | head -n1 | cut -d: -f1)
+[ -n "$pa" ] && [ -n "$pb" ] && [ -n "$pc" ] || { echo FAIL_NOT_ALL_PRESENTED; exit 1; }
+[ "$pa" -lt "$pb" ] && [ "$pb" -lt "$pc" ] || { echo "FAIL_ORDER: a=$pa b=$pb c=$pc"; exit 1; }
+# After three skips: all three records still byte-identical.
+[ "$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RA}.json" | awk '{print $1}')" = "$ha" ] || { echo FAIL_RA_MUT; exit 1; }
+[ "$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RB}.json" | awk '{print $1}')" = "$hb" ] || { echo FAIL_RB_MUT; exit 1; }
+[ "$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_RC}.json" | awk '{print $1}')" = "$hc" ] || { echo FAIL_RC_MUT; exit 1; }
+# Non-interactive short-read: only 1 input line provided → remaining sessions auto-skip, exit 0.
+out2=$(printf 'skip\n' | cst review-stale); rc=$?
+[ "$rc" = "0" ] || { echo "FAIL_EOF_RC=$rc"; exit 1; }
+echo REVIEW_STALE_OK
+```
+**Expected:** prints `REVIEW_STALE_OK`.
+
+### Check 12 — Short-id prefix ambiguity: candidates listed, exit 3, no mutation
+
+```bash
+SID_A=aabbccdd-1111-2222-3333-444455556666
+SID_B=aabbccdd-7777-8888-9999-aaaabbbbcccc
+for s in $SID_A $SID_B; do
+    CLAUDE_SESSION_ID=$s CLAUDE_PROJECT_DIR=/tmp/amb cst hook session-start < /dev/null
+done
+h1=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_A}.json" | awk '{print $1}')
+h2=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_B}.json" | awk '{print $1}')
+out=$(cst set aabbccdd --priority high 2>&1); rc=$?
+[ "$rc" = "3" ] || { echo "FAIL_EXIT: $rc"; exit 1; }
+echo "$out" | grep -q 'ambiguous' || { echo FAIL_NO_WORD; exit 1; }
+echo "$out" | grep -q "${SID_A:0:8}" || { echo FAIL_NO_CAND_A; exit 1; }
+echo "$out" | grep -q "${SID_B:0:8}" || { echo FAIL_NO_CAND_B; exit 1; }
+h1b=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_A}.json" | awk '{print $1}')
+h2b=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_B}.json" | awk '{print $1}')
+[ "$h1" = "$h1b" ] && [ "$h2" = "$h2b" ] || { echo FAIL_MUTATED; exit 1; }
+echo AMBIGUOUS_OK
+```
+**Expected:** prints `AMBIGUOUS_OK`.
+
+### Check 12b — Ambiguous prefix on every id-accepting subcommand
+
+Addresses amendment §11.3. Uses the same two-record ambiguous
+fixture as Check 12; reruns the ambiguity path on `done`, `archive`,
+`focus`, `resume`, and re-verifies `set` for symmetry. All five must
+exit 3, print `ambiguous`, and leave both record files
+byte-identical.
+
+```bash
+# Fixture from Check 12 already present; rehash baseline.
+h1=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_A}.json" | awk '{print $1}')
+h2=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_B}.json" | awk '{print $1}')
+
+for cmd in "set aabbccdd --priority high" "done aabbccdd" "archive aabbccdd" "focus aabbccdd" "resume aabbccdd"; do
+    # Force non-darwin so focus/resume CANNOT succeed on ambiguity for a
+    # different reason; the resolver MUST still fire first (§2.8 ordering).
+    out=$(CST_FORCE_PLATFORM=linux cst $cmd 2>&1); rc=$?
+    [ "$rc" = "3" ] || { echo "FAIL_RC $cmd -> $rc"; exit 1; }
+    echo "$out" | grep -q 'ambiguous' || { echo "FAIL_MSG $cmd"; exit 1; }
+    echo "$out" | grep -q "${SID_A:0:8}" || { echo "FAIL_CANDA $cmd"; exit 1; }
+    echo "$out" | grep -q "${SID_B:0:8}" || { echo "FAIL_CANDB $cmd"; exit 1; }
+    h1n=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_A}.json" | awk '{print $1}')
+    h2n=$(shasum -a 256 "$HOME/.claude/claude-tasks/${SID_B}.json" | awk '{print $1}')
+    [ "$h1" = "$h1n" ] && [ "$h2" = "$h2n" ] || { echo "FAIL_MUTATED $cmd"; exit 1; }
+done
+echo AMBIGUOUS_ALL_CMDS_OK
+```
+**Expected:** prints `AMBIGUOUS_ALL_CMDS_OK`.
+
+### Check 13 — Short-id prefix: too short
+
+```bash
+out=$(cst set aabbc --priority high 2>&1); rc=$?
+[ "$rc" = "2" ] || { echo "FAIL_EXIT: $rc"; exit 1; }
+echo "$out" | grep -q 'at least 6 hex' || { echo FAIL_MSG; exit 1; }
+echo SHORT_PREFIX_OK
+```
+**Expected:** prints `SHORT_PREFIX_OK`.
+
+### Check 14 — `cst focus` / `cst resume` coverage (via pytest monkeypatch)
+
+```bash
+python3 -m pytest -q tests/test_focus.py tests/test_resume.py
+```
+**Expected:** all tests pass. Tests exercise every branch
+(supported terminal, unsupported, osascript failure, macOS guard,
+missing cwd, no supported terminal) without invoking real AppleScript.
+
+### Check 15 — `cst focus` on non-macOS exits with platform message
+
+```bash
+CST_FORCE_PLATFORM=linux cst focus aabbccdd-1111-2222-3333-444455556666 2>/tmp/focus.err
+rc=$?
+[ "$rc" = "6" ] || { echo "FAIL_EXIT: $rc"; exit 1; }
+grep -q 'only supported on macOS' /tmp/focus.err || { echo FAIL_MSG; exit 1; }
+echo PLATFORM_GUARD_OK
+```
+**Expected:** prints `PLATFORM_GUARD_OK`.
+
+### Check 16 — `cst statusline` output shapes
+
+```bash
+rm -rf "$HOME/.claude/claude-tasks"; mkdir -p "$HOME/.claude/claude-tasks"
+out=$(cst statusline); [ -z "$out" ] || { echo "FAIL_EMPTY: '$out'"; exit 1; }
+CLAUDE_SESSION_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee CLAUDE_PROJECT_DIR=/tmp/sl \
+    cst hook session-start < /dev/null
+out=$(cst statusline)
+echo "$out" | grep -qF '📋 1 pending  →  /tasks' || { echo "FAIL_PENDING: '$out'"; exit 1; }
+echo "$out" | grep -qF 'stale' && { echo FAIL_UNEXPECTED_STALE; exit 1; } || true
+# Amendment §11 polish: arrow must NEVER appear when pending == 0.
+rm -rf "$HOME/.claude/claude-tasks"; mkdir -p "$HOME/.claude/claude-tasks"
+empty_out=$(cst statusline)
+echo "$empty_out" | grep -qF '/tasks' && { echo FAIL_ARROW_ON_EMPTY; exit 1; } || true
+# Re-seed the pending session for the rest of the check.
+CLAUDE_SESSION_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee CLAUDE_PROJECT_DIR=/tmp/sl \
+    cst hook session-start < /dev/null
 python3 -c "
-import json
-rows = json.load(open('/tmp/cst_list.json'))
-titles = [r['title'] for r in rows]
-assert titles == ['H-recent', 'H-old', 'M-recent', 'L-newest'], titles
-print('SORT_OK')
+import json, pathlib, os, datetime
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json')
+r = json.loads(p.read_text())
+r['last_activity_at'] = (datetime.datetime.now(datetime.timezone.utc)
+    - datetime.timedelta(hours=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+p.write_text(json.dumps(r))
 "
+out=$(cst statusline)
+echo "$out" | grep -qF '📋 1 pending · 1 stale  →  /tasks' || { echo "FAIL_STALE: '$out'"; exit 1; }
+echo STATUSLINE_OK
 ```
+**Expected:** prints `STATUSLINE_OK`.
 
-**Expected**: prints `SORT_OK`. Ordering is `high → medium → low`; within a priority, more recent `last_activity_at` comes first.
-
-### Check 8 — Atomic writes / no partial files
+### Check 17 — Statusline perf: ≤ 150 ms on 200 records
 
 ```bash
-# Simulated by forcing a write and examining directory contents. Registry writes use
-# tempfile + os.replace; at no point should a zero-byte <id>.json exist.
-# The pytest suite (see §6) covers this by monkeypatching os.replace to raise and
-# asserting the destination file is either absent or unchanged.
-pytest -q tests/test_registry.py::test_atomic_write_no_partial
+python3 -m pytest -q tests/test_statusline.py::test_statusline_200_records_under_150ms
 ```
+**Expected:** test passes.
 
-**Expected**: test passes.
-
-### Check 9 — `done` keeps visible, `archive` hides (hard assertions)
-
-```bash
-cst done 22222222-2222-2222-2222-222222222222
-[ "$(cst list | grep -c 22222222)" = "1" ] || { echo FAIL_DONE_HIDDEN; exit 1; }
-cst archive 22222222-2222-2222-2222-222222222222
-[ "$(cst list | grep -c 22222222)" = "0" ] || { echo FAIL_ARCHIVE_VISIBLE; exit 1; }
-[ "$(cst list --all | grep -c 22222222)" = "1" ] || { echo FAIL_ALL_MISSING; exit 1; }
-echo LIFECYCLE_OK
-```
-
-**Expected**: prints `LIFECYCLE_OK`. Any failed assertion aborts with a `FAIL_*` message and non-zero exit.
-
-### Check 11 — Two distinct session ids produce two distinct records
-
-```bash
-rm -f ~/.claude/claude-tasks/33333333-*.json ~/.claude/claude-tasks/44444444-*.json
-CLAUDE_SESSION_ID=33333333-3333-3333-3333-333333333333 CLAUDE_PROJECT_DIR=/tmp/a \
-    cst hook session-start < /dev/null
-CLAUDE_SESSION_ID=44444444-4444-4444-4444-444444444444 CLAUDE_PROJECT_DIR=/tmp/b \
-    cst hook session-start < /dev/null
-n=$(ls ~/.claude/claude-tasks/ | grep -cE '^(33333333|44444444)-[0-9a-f-]+\.json$')
-[ "$n" = "2" ] || { echo FAIL_MERGE; exit 1; }
-m=$(cst list --json | python3 -c "import json,sys; rows=json.load(sys.stdin); print(sum(1 for r in rows if r['session_id'].startswith(('33333333','44444444'))))")
-[ "$m" = "2" ] || { echo FAIL_LIST_MERGE; exit 1; }
-echo DISTINCT_IDS_OK
-```
-
-**Expected**: prints `DISTINCT_IDS_OK`. Guards against a bug where both hook invocations collapse into a single record.
-
-### Check 12 — Installer works from a truly fresh `$HOME`
-
-```bash
-TMPH=$(mktemp -d)
-HOME="$TMPH" bash install.sh
-test -f "$TMPH/.claude/settings.json" || { echo FAIL_NO_SETTINGS; exit 1; }
-test -d "$TMPH/.claude/claude-tasks"  || { echo FAIL_NO_TASKDIR;  exit 1; }
-HOME="$TMPH" python3 -c "
-import json, os, pathlib
-s = json.loads(pathlib.Path(os.environ['HOME'], '.claude/settings.json').read_text())
-assert 'SessionStart'      in s.get('hooks', {}), s
-assert 'UserPromptSubmit'  in s.get('hooks', {}), s
-print('FRESH_OK')
-"
-```
-
-**Expected**: prints `FRESH_OK`. Covers the clean-machine DoD bullet — no pre-existing `~/.claude` or `settings.json`.
-
-### Check 13 — Installer refuses to touch a malformed `settings.json`
-
-Per §2, policy (a): the installer exits non-zero and does NOT modify the file.
+### Check 18 — Installer wires statusline once; never overwrites existing
 
 ```bash
 TMPH=$(mktemp -d); mkdir -p "$TMPH/.claude"
-echo '{not: valid' > "$TMPH/.claude/settings.json"
-orig=$(cat "$TMPH/.claude/settings.json")
-HOME="$TMPH" bash install.sh; rc=$?
-now=$(cat "$TMPH/.claude/settings.json")
-[ "$rc" != "0" ]    || { echo FAIL_INSTALLER_SILENT; exit 1; }
-[ "$orig" = "$now" ] || { echo FAIL_INSTALLER_OVERWROTE; exit 1; }
-# And no settings.json.bak-* was written (policy (a), not (b)):
-! ls "$TMPH/.claude/" | grep -qE '^settings\.json\.bak-' || { echo FAIL_UNEXPECTED_BACKUP; exit 1; }
-echo MALFORMED_SETTINGS_RESPECTED
+echo '{"statusLine":{"type":"command","command":"echo CUSTOM"}}' > "$TMPH/.claude/settings.json"
+HOME=$TMPH bash install.sh >/tmp/inst.log 2>&1
+grep -q 'existing statusline' /tmp/inst.log || { echo FAIL_NO_WARN; exit 1; }
+python3 -c "
+import json, pathlib
+s = json.loads(pathlib.Path('$TMPH/.claude/settings.json').read_text())
+assert s['statusLine']['command'] == 'echo CUSTOM', s
+print('PRESERVED')
+"
+
+TMPH2=$(mktemp -d)
+HOME=$TMPH2 bash install.sh >/dev/null 2>&1
+# Amendment §11.9: assert the FULL statusLine object shape, not just command.
+python3 -c "
+import json, pathlib
+s = json.loads(pathlib.Path('$TMPH2/.claude/settings.json').read_text())
+sl = s['statusLine']
+assert isinstance(sl, dict), sl
+assert sl['type'] == 'command', sl
+assert sl['command'] == 'cst statusline', sl
+assert sl['padding'] == 0, sl
+# And no stray keys we don't intend:
+assert set(sl.keys()) == {'type', 'command', 'padding'}, sl
+print('FRESH_SET')
+"
+
+HOME=$TMPH2 bash install.sh >/dev/null 2>&1
+python3 -c "
+import json, pathlib
+s = json.loads(pathlib.Path('$TMPH2/.claude/settings.json').read_text())
+sl = s['statusLine']
+assert sl['type'] == 'command' and sl['command'] == 'cst statusline' and sl['padding'] == 0, sl
+assert set(sl.keys()) == {'type', 'command', 'padding'}, sl
+print('IDEMPOTENT_OK')
+"
+echo STATUSLINE_INSTALL_OK
 ```
+**Expected:** prints `PRESERVED`, `FRESH_SET`, `IDEMPOTENT_OK`,
+`STATUSLINE_INSTALL_OK`.
 
-**Expected**: prints `MALFORMED_SETTINGS_RESPECTED`. The installer must exit non-zero AND leave the malformed file byte-identical AND not create any backup file.
-
-### Check 14 — Hook reads stdin JSON payload (env-less)
+### Check 19 — Config file drives stale threshold
 
 ```bash
-rm -f ~/.claude/claude-tasks/55555555-*.json
-echo '{"session_id":"55555555-5555-5555-5555-555555555555","cwd":"/tmp/x","hook_event_name":"SessionStart","transcript_path":"/tmp/x.jsonl"}' \
-  | env -i PATH="$PATH" cst hook session-start
-test -f ~/.claude/claude-tasks/55555555-5555-5555-5555-555555555555.json || { echo FAIL_STDIN_NOOP; exit 1; }
 python3 -c "
-import json, pathlib
-r = json.loads(pathlib.Path.home().joinpath('.claude/claude-tasks/55555555-5555-5555-5555-555555555555.json').read_text())
-assert r['session_id'] == '55555555-5555-5555-5555-555555555555'
-assert r['cwd'] == '/tmp/x'
-print('STDIN_OK')
+import json, pathlib, os, datetime
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json')
+r = json.loads(p.read_text())
+r['last_activity_at'] = (datetime.datetime.now(datetime.timezone.utc)
+    - datetime.timedelta(minutes=90)).strftime('%Y-%m-%dT%H:%M:%SZ')
+r['archived'] = False; r['status'] = 'in_progress'
+p.write_text(json.dumps(r))
 "
-# Activity hook on stdin too:
-echo '{"session_id":"55555555-5555-5555-5555-555555555555","hook_event_name":"UserPromptSubmit"}' \
-  | env -i PATH="$PATH" cst hook activity
-echo STDIN_CHECKS_OK
+cst list --stale | grep -q aaaaaaaa && { echo FAIL_DEFAULT_STALE; exit 1; } || true
+echo '{"stale_threshold_seconds": 3600}' > "$HOME/.claude/claude-tasks.config.json"
+cst list --stale | grep -q aaaaaaaa || { echo FAIL_CONFIG_NOT_APPLIED; exit 1; }
+echo CONFIG_OK
 ```
+**Expected:** prints `CONFIG_OK`.
 
-**Expected**: prints `STDIN_OK` then `STDIN_CHECKS_OK`. Confirms that the hook parses stdin JSON without any env vars set.
-
-### Check 10 — Installer did not overwrite an existing statusLine
+### Check 20 — Malformed config file does NOT break `cst list`
 
 ```bash
-# Pre-seed ~/.claude/settings.json with a dummy statusLine, then rerun installer,
-# then assert the dummy is still present.
+echo 'not json' > "$HOME/.claude/claude-tasks.config.json"
+cst list >/dev/null; rc=$?
+[ "$rc" = "0" ] || { echo "FAIL: cst list broke on bad config (rc=$rc)"; exit 1; }
+grep -q 'claude-tasks.config.json' "$HOME/.claude/claude-tasks/.scanner-errors.log" \
+    || { echo FAIL_NO_LOG_ENTRY; exit 1; }
+echo CONFIG_ROBUST_OK
+```
+**Expected:** prints `CONFIG_ROBUST_OK`.
+
+### Check 21 — `cst gc` respects the 7-day window
+
+```bash
+SID_OLD=11112222-3333-4444-5555-666677778888
+SID_NEW=aabbccdd-eeff-0011-2233-445566778899
+SID_LIVE=00001111-2222-3333-4444-555566667777
 python3 -c "
-import json, pathlib
-p = pathlib.Path.home()/'.claude/settings.json'
-s = json.loads(p.read_text()) if p.exists() else {}
-s['statusLine'] = {'type':'command','command':'echo MY_EXISTING_STATUSLINE'}
-p.write_text(json.dumps(s))
+import json, pathlib, os, datetime
+home = pathlib.Path(os.environ['HOME'])
+d = home / '.claude/claude-tasks'
+def rec(sid, archived, archived_at, status='in_progress'):
+    (d / f'{sid}.json').write_text(json.dumps({
+        'session_id': sid, 'title': sid[:6], 'priority': 'medium',
+        'status': status, 'cwd': '/tmp', 'project_name': 'x',
+        'tags': [], 'note': '',
+        'created_at': '2025-01-01T00:00:00Z',
+        'last_activity_at': '2025-01-01T00:00:00Z',
+        'last_user_prompt': '', 'last_assistant_summary': '', 'current_task_hint': '',
+        'terminal': {'app': None, 'window_id': None, 'tab_id': None, 'tty': None},
+        'auto_detected': False, 'archived': archived, 'archived_at': archived_at,
+    }))
+now = datetime.datetime.now(datetime.timezone.utc)
+rec('${SID_OLD}',  True,  (now - datetime.timedelta(days=8)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+rec('${SID_NEW}',  True,  (now - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+rec('${SID_LIVE}', False, None)
 "
-bash install.sh
+out21=$(cst gc); rc=$?
+[ "$rc" = "0" ] || { echo "FAIL_RC: $rc"; exit 1; }
+[ ! -f "$HOME/.claude/claude-tasks/${SID_OLD}.json" ] || { echo FAIL_OLD_KEPT; exit 1; }
+[ -f "$HOME/.claude/claude-tasks/${SID_NEW}.json" ]   || { echo FAIL_NEW_DELETED; exit 1; }
+[ -f "$HOME/.claude/claude-tasks/${SID_LIVE}.json" ]  || { echo FAIL_LIVE_DELETED; exit 1; }
+# Pin the summary format: "cst gc: deleted <N> record(s); kept <M> archived record(s) still within the 7-day window"
+echo "$out21" | grep -qE '^cst gc: deleted 1 record\(s\); kept 1 archived record\(s\) still within the 7-day window$' \
+    || { echo "FAIL_SUMMARY: '$out21'"; exit 1; }
+echo GC_OK
+```
+**Expected:** prints `GC_OK`.
+
+### Check 21b — `cst gc` on empty registry and on all-non-archived registry
+
+Addresses amendment §11.4.
+
+```bash
+# (a) Registry with zero records at all:
+rm -rf "$HOME/.claude/claude-tasks"; mkdir -p "$HOME/.claude/claude-tasks"
+out=$(cst gc); rc=$?
+[ "$rc" = "0" ] || { echo "FAIL_EMPTY_RC=$rc"; exit 1; }
+echo "$out" | grep -qE '^cst gc: deleted 0 record\(s\); kept 0 archived record\(s\) still within the 7-day window$' \
+    || { echo "FAIL_EMPTY_MSG: '$out'"; exit 1; }
+
+# (b) Registry with only non-archived records:
+CLAUDE_SESSION_ID=dddddddd-dddd-dddd-dddd-dddddddddddd CLAUDE_PROJECT_DIR=/tmp/g \
+    cst hook session-start < /dev/null
+rec_path=$(ls "$HOME/.claude/claude-tasks/"dddddddd-*.json | head -n1)
+before=$(shasum -a 256 "$rec_path" | awk '{print $1}')
+out=$(cst gc); rc=$?
+after=$(shasum -a 256 "$rec_path" | awk '{print $1}')
+[ "$rc" = "0" ] || { echo "FAIL_NOARCH_RC=$rc"; exit 1; }
+[ "$before" = "$after" ] || { echo FAIL_NOARCH_MUTATED; exit 1; }
+echo "$out" | grep -qE '^cst gc: deleted 0 record\(s\); kept 0 archived record\(s\) still within the 7-day window$' \
+    || { echo "FAIL_NOARCH_MSG: '$out'"; exit 1; }
+echo GC_EMPTY_OK
+```
+**Expected:** prints `GC_EMPTY_OK`.
+
+### Check 22 — Live-vs-idle dot via `ps` monkeypatch (pytest)
+
+```bash
+python3 -m pytest -q tests/test_live_dot.py
+```
+**Expected:** passes. Tests inject a fake `ps` output via subprocess
+mocking and assert the dot for matching / non-matching / no-tty rows.
+
+### Check 23 — `--json` schema compatibility across `--all` / `--stale`; banner omitted
+
+Addresses amendment §11.6. Verifies that the JSON surface parses
+cleanly under every combination of filter flags, the schema keys are
+present for every row in every combination, and the stale banner /
+any non-JSON chrome are absent from JSON output.
+
+```bash
+for flags in "" "--all" "--stale" "--all --stale"; do
+    out=$(cst list $flags --json)
+    # 1. Parses as JSON.
+    echo "$out" | python3 -c "import sys,json; json.load(sys.stdin)" \
+        || { echo "FAIL_JSON_PARSE flags='$flags'"; exit 1; }
+    # 2. No banner / chrome leaked into JSON.
+    echo "$out" | grep -qF '⚠' && { echo "FAIL_BANNER_LEAK flags='$flags'"; exit 1; } || true
+    echo "$out" | grep -qF "run 'cst review-stale'" && { echo "FAIL_HINT_LEAK flags='$flags'"; exit 1; } || true
+    # 3. Every row has the full Sprint 2 schema.
+    echo "$out" | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+for r in rows:
+    for k in ('session_id','short_id','priority','status','title','project_name','last_activity_at','archived',
+              'last_user_prompt','last_assistant_summary','current_task_hint','live'):
+        assert k in r, (k, r)
+" || { echo "FAIL_SCHEMA flags='$flags'"; exit 1; }
+done
+echo SCHEMA_OK
+```
+**Expected:** prints `SCHEMA_OK`.
+
+### Check 24 — Progress fields absent in pre-Sprint-2 record files are tolerated
+
+```bash
 python3 -c "
-import json, pathlib
-s = json.loads((pathlib.Path.home()/'.claude/settings.json').read_text())
-assert s['statusLine']['command'] == 'echo MY_EXISTING_STATUSLINE', s
-print('STATUSLINE_UNTOUCHED')
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/ffffffff-ffff-ffff-ffff-ffffffffffff.json')
+p.write_text(json.dumps({
+    'session_id': 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    'title': 'legacy', 'priority': 'medium', 'status': 'in_progress',
+    'cwd': '/tmp', 'project_name': 'x', 'tags': [], 'note': '',
+    'created_at': '2025-01-01T00:00:00Z', 'last_activity_at': '2025-01-01T00:00:00Z',
+    'terminal': {'app': None, 'window_id': None, 'tab_id': None, 'tty': None},
+    'auto_detected': True, 'archived': False, 'archived_at': None,
+}))
+"
+cst list >/dev/null && echo LEGACY_RECORD_OK || { echo LEGACY_RECORD_FAIL; exit 1; }
+cst list --json | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+legacy = [r for r in rows if r['session_id'].startswith('ffffffff')][0]
+assert legacy['last_user_prompt'] == ''
+assert legacy['last_assistant_summary'] == ''
+assert legacy['current_task_hint'] == ''
+print('LEGACY_JSON_OK')
 "
 ```
+**Expected:** prints `LEGACY_RECORD_OK` and `LEGACY_JSON_OK`.
 
-**Expected**: prints `STATUSLINE_UNTOUCHED`.
+### Check 25 — User cannot write progress fields via `cst set`
+
+```bash
+out=$(cst set ffffffff --last-user-prompt 'user-set' 2>&1); rc=$?
+[ "$rc" != "0" ] || { echo "FAIL: cst set accepted --last-user-prompt"; exit 1; }
+echo NO_USER_WRITE_OK
+```
+**Expected:** prints `NO_USER_WRITE_OK`. The flag does not exist;
+argparse rejects it.
+
+### Check 26 — Missing `name` field in tool_use is tolerated
+
+```bash
+python3 -c "
+import json, pathlib, os
+p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+# tool_use with NO name key at all:
+p.write_text(json.dumps({'type':'user','message':{'content':'q'},'cwd':'/tmp/demo'}) + '\n'
+             + json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','input':{'command':'x'}}]}}) + '\n')
+"
+cst scan; rc=$?
+[ "$rc" = "0" ] || { echo FAIL_SCAN_RC; exit 1; }
+python3 -c "
+import json, pathlib, os
+r = json.loads(pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/${SID}.json').read_text())
+assert r['current_task_hint'] == '', r   # no name -> empty hint
+print('MISSING_NAME_OK')
+"
+```
+**Expected:** prints `MISSING_NAME_OK`.
+
+### Check 28 — Unicode / emoji / CJK / RTL content round-trips to `cst list`
+
+Addresses amendment §11.8. The contract promises no visual shaping,
+only that bytes survive extraction, truncation, and rendering
+without `UnicodeEncodeError` or silent stripping.
+
+```bash
+python3 -c "
+import json, pathlib, os
+SID = '66666666-6666-6666-6666-666666666666'
+p = pathlib.Path(os.environ['HOME'], f'.claude/projects/-tmp-demo/{SID}.jsonl')
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps({'type':'user','message':{'content':'fix 🐛 login 한글 العربية'},'cwd':'/tmp/demo'}) + '\n')
+"
+cst scan >/dev/null
+# UTF-8 stdout even when LANG is C; PYTHONIOENCODING is Python's lever.
+out=$(PYTHONIOENCODING=utf-8 cst list)
+echo "$out" | grep -qF '🐛'     || { echo FAIL_EMOJI; exit 1; }
+echo "$out" | grep -qF '한글'    || { echo FAIL_CJK;   exit 1; }
+echo "$out" | grep -qF 'العربية' || { echo FAIL_RTL;   exit 1; }
+# Also survives --json:
+out_j=$(PYTHONIOENCODING=utf-8 cst list --json)
+echo "$out_j" | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+hit = [r for r in rows if r['session_id'].startswith('66666666')]
+assert hit, rows
+lp = hit[0]['last_user_prompt']
+assert '🐛' in lp and '한글' in lp and 'العربية' in lp, lp
+"
+echo UNICODE_DISPLAY_OK
+```
+**Expected:** prints `UNICODE_DISPLAY_OK`.
+
+### Check 29 — "Fresher wins": scanner does NOT regress a hook-written prompt
+
+Addresses amendment §11.5. The scanner must refrain from overwriting
+`last_user_prompt` when the JSONL user line is not newer than the
+record's `last_activity_at` (which the hook bumped to "now" when it
+wrote the prompt).
+
+```bash
+SID=77777777-7777-7777-7777-777777777777
+# Create an OLD transcript (mtime in the past) with one user message:
+mkdir -p "$HOME/.claude/projects/-tmp-fresh"
+JF="$HOME/.claude/projects/-tmp-fresh/${SID}.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"old transcript prompt"},"cwd":"/tmp/fresh"}' > "$JF"
+# Force mtime to 1 hour ago:
+python3 -c "
+import os, time
+past = time.time() - 3600
+os.utime('$JF', (past, past))
+"
+cst scan >/dev/null
+# Scanner sees the old line and populates the prompt:
+got=$(cst list --json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r['session_id'] == '$SID':
+        print(r['last_user_prompt']); break
+")
+[ "$got" = "old transcript prompt" ] || { echo "FAIL_SEED: '$got'"; exit 1; }
+
+# Hook fires later with a NEW prompt → must win and bump last_activity_at.
+echo '{"session_id":"'"$SID"'","hook_event_name":"UserPromptSubmit","prompt":"fresh hook prompt"}' \
+    | cst hook activity
+got2=$(cst list --json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r['session_id'] == '$SID':
+        print(r['last_user_prompt']); break
+")
+[ "$got2" = "fresh hook prompt" ] || { echo "FAIL_HOOK_WRITE: '$got2'"; exit 1; }
+
+# Re-run scan. Transcript is UNCHANGED (same old mtime, same "old transcript prompt"
+# line). Scanner must NOT clobber the hook's fresher value.
+cst scan >/dev/null
+got3=$(cst list --json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r['session_id'] == '$SID':
+        print(r['last_user_prompt']); break
+")
+[ "$got3" = "fresh hook prompt" ] || { echo "FAIL_REGRESSION: scanner clobbered hook prompt -> '$got3'"; exit 1; }
+
+# Opposite direction: touch the JSONL forward and append a genuinely-newer user line;
+# scanner should now win because JSONL mtime > last_activity_at.
+printf '%s\n' '{"type":"user","message":{"content":"genuinely newer line"},"cwd":"/tmp/fresh"}' >> "$JF"
+python3 -c "
+import os, time
+future = time.time() + 60
+os.utime('$JF', (future, future))
+"
+cst scan >/dev/null
+got4=$(cst list --json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r['session_id'] == '$SID':
+        print(r['last_user_prompt']); break
+")
+[ "$got4" = "genuinely newer line" ] || { echo "FAIL_FRESH_WIN: '$got4'"; exit 1; }
+echo FRESHER_WINS_OK
+```
+**Expected:** prints `FRESHER_WINS_OK`.
+
+### Check 30 — Config loader rejects zero / negative / bool values
+
+Addresses amendment §11.11.
+
+```bash
+for bad in '{"stale_threshold_seconds": 0}' \
+           '{"stale_threshold_seconds": -1}' \
+           '{"stale_threshold_seconds": -3600}' \
+           '{"stale_threshold_seconds": true}' \
+           '{"stale_threshold_seconds": 1.5}' \
+           '{"stale_threshold_seconds": "3600"}'; do
+    echo "$bad" > "$HOME/.claude/claude-tasks.config.json"
+    cst list >/dev/null; rc=$?
+    [ "$rc" = "0" ] || { echo "FAIL_RC for '$bad' -> $rc"; exit 1; }
+done
+# And confirm the threshold still defaults to 14400s: age a session by 90min → NOT stale.
+python3 -c "
+import json, pathlib, os, datetime
+p = pathlib.Path(os.environ['HOME'], '.claude/claude-tasks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json')
+if p.exists():
+    r = json.loads(p.read_text())
+    r['last_activity_at'] = (datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(minutes=90)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    r['archived'] = False; r['status'] = 'in_progress'
+    p.write_text(json.dumps(r))
+"
+cst list --stale | grep -q aaaaaaaa && { echo FAIL_WRONGLY_STALE; exit 1; } || true
+# Log file mentions the bad-value path.
+grep -q 'claude-tasks.config.json' "$HOME/.claude/claude-tasks/.scanner-errors.log" \
+    || { echo FAIL_NO_LOG; exit 1; }
+echo CONFIG_NEGATIVE_OK
+```
+**Expected:** prints `CONFIG_NEGATIVE_OK`.
+
+### Check 27 — Sprint 1 regression via JSON surface
+
+(Sprint 1's stdout TSV gains a leading live-dot column; its one-off
+check script must be consulted via the JSON surface instead.)
+
+```bash
+# Full Sprint 1 pytest suite must still pass unchanged:
+python3 -m pytest -q tests/test_registry.py tests/test_scanner.py \
+                      tests/test_hooks.py tests/test_cli.py tests/test_installer.py
+```
+**Expected:** all Sprint 1 tests remain green. Any Sprint 1 test
+that depended on exact TSV column count is migrated to parse
+`cst list --json` and is explicitly listed in §6 as "extended".
 
 ## 6. Test harness
 
-Pytest suite under `tests/`:
+Sprint 1 had 43 passing tests across five files. Sprint 2 extends
+those files and adds seven new ones. All tests run under the same
+`tests/conftest.py` HOME-redirection guard.
 
-- `tests/test_registry.py`
-  - `test_create_read_roundtrip`
-  - `test_update_flips_auto_detected`
-  - `test_atomic_write_no_partial` — patches `os.replace` to raise on first call, asserts no partial file left behind.
-  - `test_corrupt_file_isolated` — writes bad JSON alongside good, asserts `list_all()` returns only the good one and the bad one is renamed.
-  - `test_concurrent_writes` — two threads writing distinct records must both succeed.
+Augmented files:
 
-- `tests/test_scanner.py`
-  - `test_creates_draft_from_jsonl` — fixture JSONL with one user message yields a record with the expected title.
-  - `test_title_falls_back_to_project_name` — JSONL with no user message yields title == project_name.
-  - `test_title_from_later_user_message_when_first_is_assistant` — first line is assistant, second is user; title comes from the user line.
-  - `test_empty_jsonl_falls_back_to_project_name` — zero-byte file: title == project_name, no crash.
-  - `test_non_uuid_filename_is_ignored` — a `notauuid.jsonl` file creates no record and does not crash.
-  - `test_updates_last_activity_from_mtime`
-  - `test_never_overwrites_user_fields` — pre-seed a record with `auto_detected=False` and non-default `title`, `priority`, `status`, `note`, `tags`; rescan; assert ALL FIVE fields unchanged.
-  - `test_never_touches_archived` — archived record's `archived` flag survives rescan.
-  - `test_project_name_derivation` — slug `-tmp-fake-proj` → `project_name == 'fake-proj'`; slug `-Users-alice-proj-foo` → `'foo'`; empty / odd slug falls back to the raw slug.
+- `tests/test_registry.py` — add:
+  - `test_new_record_seeds_progress_fields_empty`
+  - `test_read_tolerates_missing_progress_fields`
+  - `test_update_refuses_progress_field_keys` (registry.update refuses
+    `last_user_prompt`, `last_assistant_summary`, `current_task_hint`
+    — defense in depth even though the CLI has no flag).
 
-- `tests/test_cli.py`
-  - `test_list_empty_exits_zero`
-  - `test_set_then_list` — invokes CLI via `subprocess.run([sys.executable, 'scripts/cst.py', ...])`.
-  - `test_done_visible_archive_hidden`
-  - `test_list_sort_order_high_medium_low_then_recency` — seeds four records across priorities + mtimes, asserts parsed `cst list --json` order matches `[high-recent, high-old, medium-*, low-*]`.
-  - `test_list_json_schema` — each emitted JSON element contains the binding keys (`session_id`, `short_id`, `priority`, `status`, `title`, `project_name`, `last_activity_at`, `archived`).
-  - `test_version_flag` — `cst --version` prints `cst 0.1.0` and exits 0.
+- `tests/test_scanner.py` — add:
+  - `test_extracts_last_user_prompt`
+  - `test_extracts_last_assistant_summary_first_line`
+  - `test_extracts_last_assistant_summary_skips_tool_use_parts`
+  - `test_extracts_current_task_hint_bash`
+  - `test_extracts_current_task_hint_edit_write_multiedit_notebookedit` (parametrized)
+  - `test_extracts_current_task_hint_read`
+  - `test_extracts_current_task_hint_grep_glob` (parametrized)
+  - `test_current_task_hint_empty_when_no_tool_use_in_tail`
+  - `test_current_task_hint_fallback_to_bare_tool_name_when_missing_input`
+  - `test_current_task_hint_empty_when_tool_use_has_no_name`
+  - `test_current_task_hint_relpath_when_file_under_cwd`
+  - `test_current_task_hint_basename_when_file_outside_cwd`
+  - `test_truncation_100_chars_with_single_ellipsis`
+  - `test_truncation_is_code_point_aware_for_cjk`
+  - `test_non_utf8_bytes_do_not_crash`
+  - `test_scanner_always_overwrites_progress_even_when_auto_detected_false`
+  - `test_scanner_error_isolated_to_single_transcript` (one malformed
+    file alongside one good; asserts good record gets progress, bad
+    one's pre-existing progress is preserved, and the scanner error
+    log has exactly one entry).
+  - `test_scanner_limits_tail_window_to_50_lines` — seeds a 1000-line
+    transcript; asserts the hint/prompt/summary come from the last
+    50 lines and earlier lines don't leak in. Additionally, a
+    boundary case asserts the window is EXACTLY the last 50: line 50
+    from the end is visible, line 51 from the end is not.
+  - `test_scanner_does_not_regress_hook_written_prompt` — pre-seed a
+    record with `last_user_prompt='hook-text'` and
+    `last_activity_at=now`; set the JSONL mtime to 1 hour ago with a
+    user message `old-text`; run the scanner; assert
+    `last_user_prompt == 'hook-text'` (unchanged).
+  - `test_scanner_overwrites_prompt_when_jsonl_is_newer` — inverse:
+    JSONL mtime is strictly newer than `last_activity_at`, JSONL
+    user line differs from stored; assert scanner overwrites.
+  - `test_scanner_does_not_overwrite_when_extracted_value_equals_stored`
+    (no-op writes are avoided; the file's mtime should not bump when
+    nothing changed — asserted via `os.stat(record_path).st_mtime`
+    pre/post).
 
-- `tests/test_hooks.py`
-  - `test_session_start_hook_creates_record`
-  - `test_session_start_hook_exits_zero_on_missing_env` — no env, no stdin: exit 0 AND log file contains a fresh timestamped line.
-  - `test_activity_hook_touches_last_activity_at`
-  - `test_session_start_reads_stdin_payload` — JSON on stdin with `session_id`, `cwd`, `transcript_path`, no env vars; record is created with those values.
-  - `test_activity_reads_stdin_payload` — JSON on stdin with `session_id` only, no env; `last_activity_at` is touched.
-  - `test_stdin_takes_priority_over_env` — when both stdin JSON and env vars specify different `session_id`s, the stdin value wins.
-  - `test_distinct_session_ids_create_distinct_records` — two invocations with different `session_id`s produce two files, no merging.
+- `tests/test_hooks.py` — add:
+  - `test_activity_hook_writes_last_user_prompt_from_stdin`
+  - `test_activity_hook_accepts_user_prompt_key_variant` (payload
+    uses `user_prompt` instead of `prompt`).
+  - `test_activity_hook_truncates_long_prompt_from_stdin`
+  - `test_activity_hook_ignores_missing_prompt_field` (writes
+    nothing to `last_user_prompt`; still bumps `last_activity_at`).
+  - `test_activity_hook_does_not_write_assistant_summary_or_task_hint`
+  - `test_activity_hook_on_unknown_session_id` — covers the
+    create-skeleton branch from §2.3: hook invoked with a
+    `session_id` that has no record on disk creates one with the
+    defaults; `last_user_prompt` populated when payload supplied it.
+    Exit 0.
 
-- `tests/test_installer.py`
-  - `test_install_idempotent` — runs `install.sh` twice against a temp `HOME`, asserts each of `cst hook session-start` and `cst hook activity` appears exactly once with full-string equality.
-  - `test_install_preserves_existing_statusline`
-  - `test_install_from_missing_settings_json` — fresh `$HOME` with no `.claude/` at all: installer creates both `.claude/` and `settings.json` and inserts both hook events.
-  - `test_install_from_missing_claude_dir` — `$HOME` exists but `.claude/` does not: installer creates it.
-  - `test_install_refuses_malformed_settings_json` — pre-seed `settings.json` with invalid JSON; installer exits non-zero, file bytes unchanged, no `settings.json.bak-*` created.
-  - `test_install_does_not_treat_substring_match_as_duplicate` — pre-seed `settings.json` with a hook command `cst hook session-start --debug`; installer must still insert the exact `cst hook session-start` entry alongside it.
+- `tests/test_cli.py` — add:
+  - `test_list_multiline_shows_arrow_and_gear`
+  - `test_list_compact_strips_subrows_one_line_per_session`
+  - `test_list_json_includes_new_progress_fields_and_live`
+  - `test_set_rejects_progress_field_flags` (argparse rejects the
+    unknown flags; exit != 0).
+  - `test_list_stale_banner_appears`
+  - `test_list_stale_flag_filters`
+  - `test_list_stale_label_overrides_displayed_status_but_not_stored`
+  - `test_prefix_exact_full_uuid`
+  - `test_prefix_min_six_chars_exact_match`
+  - `test_prefix_ambiguous_exits_3_and_does_not_mutate` (SHA256
+    before/after).
+  - `test_prefix_too_short_exits_2`
+  - `test_prefix_not_found_exits_1`
+  - `test_prefix_applies_to_done_archive_focus_resume` (parametrized
+    over subcommands).
+
+- `tests/test_installer.py` — add:
+  - `test_install_sets_fresh_statusline` — asserts the FULL
+    `statusLine` object shape: keys exactly
+    `{"type","command","padding"}`, `type == "command"`,
+    `command == "cst statusline"`, `padding == 0`
+    (amendment §11.9).
+  - `test_install_preserves_custom_statusline` — retained from
+    Sprint 1; extend to assert a warning line on stdout mentioning
+    `existing statusline`.
+  - `test_install_idempotent_statusline` — second run leaves the
+    matching `cst statusline` entry untouched AND preserves the
+    full object shape.
+
+New files:
+
+- `tests/test_focus.py`
+  - `test_focus_iterm_runs_expected_osascript_args`
+  - `test_focus_iterm_osascript_string_matches_template` — exact
+    match (or parameterised regex with only `<W>` varying) against
+    the iTerm2 template pinned in §2.8.
+  - `test_focus_terminal_app_runs_expected_osascript_args` (with
+    window_id only, with window_id+tab_id, and with neither).
+  - `test_focus_terminal_app_osascript_string_matches_template` —
+    same byte-level pin for the Terminal.app templates.
+  - `test_focus_iterm_no_window_id_falls_back_to_activate`
+  - `test_focus_unsupported_app_exits_4_with_resume_hint`
+  - `test_focus_null_app_treated_as_unsupported`
+  - `test_focus_osascript_failure_exits_5_with_resume_hint`
+  - `test_focus_non_macos_exits_6` (via `CST_FORCE_PLATFORM=linux`).
+  - `test_focus_ambiguous_prefix_exits_3_before_platform_guard` —
+    on Linux with an ambiguous prefix: exit 3, not 6.
+  - `test_focus_window_id_is_integer_only` — a record whose
+    `terminal.window_id` is a string / float / dict yields exit 5
+    with the corrupt-window-id message (amendment §11.2); no
+    AppleScript is ever built with a non-int.
+
+- `tests/test_resume.py`
+  - `test_resume_builds_cd_and_claude_resume_command`
+  - `test_resume_iterm_osascript_string_matches_template` — byte-
+    pin against the iTerm2 resume template (§2.8).
+  - `test_resume_terminal_app_osascript_string_matches_template`.
+  - `test_resume_no_cwd_exits_1`
+  - `test_resume_no_supported_terminal_exits_4`
+  - `test_resume_non_macos_exits_6`
+  - `test_resume_shell_escapes_cwd` — parameterized over cwds:
+    `"/tmp/a b"`, `"/tmp/a'b"`, `'/tmp/a"b'`, `"/tmp/a$(x)b"`,
+    `"/tmp/a;b"`. Each must produce a SHELL layer where the
+    dangerous character is inside `shlex.quote`'d single-quoted
+    form and cannot break out of the string.
+  - `test_resume_applescript_escapes_backslash_and_quote` — cwd
+    containing `\` and `"` must be escaped per §2.8 rule 2 before
+    being wrapped in the AppleScript string literal.
+  - `test_resume_rejects_cwd_with_newline_or_null` — ValueError
+    surfaced as exit 1 with a clear message.
+  - `test_resume_ambiguous_prefix_exits_3_before_platform_guard`.
+
+- `tests/test_live_dot.py`
+  - `test_live_dot_marks_matching_tty`
+  - `test_live_dot_default_when_no_tty_stored`
+  - `test_live_dot_degrades_silently_when_ps_fails`
+  - `test_live_dot_ignores_non_claude_processes` — includes a
+    `node /path/claude-cli.js` row (basename = `node`) that must
+    NOT be treated as a claude process.
+  - `test_live_dot_comm_parsing_with_spaces` — fake `ps` output
+    contains a row whose `comm` column is
+    `/Applications/Claude Helper/claude` (space-containing path).
+    Asserts the parser's `split(None, 2)` keeps the full path in
+    col 3, basename resolves to `claude`, and the row matches.
+  - `test_live_dot_skips_rows_with_question_tty` — `??` tty rows
+    are never matched.
+  - `test_live_dot_skips_malformed_pid` — a header-like row is
+    silently skipped, not crashed on.
+
+- `tests/test_gc.py`
+  - `test_gc_deletes_only_old_archived`
+  - `test_gc_never_deletes_non_archived`
+  - `test_gc_uses_archived_at_not_mtime` (file mtime is recent, but
+    `archived_at` is old: must delete).
+  - `test_gc_tolerates_unparseable_archived_at` (skips record, logs
+    warning, exits 0; file still present).
+  - `test_gc_partial_failure_continues_and_exits_1`
+
+- `tests/test_review_stale.py`
+  - `test_review_stale_keep_is_byte_identical`
+  - `test_review_stale_skip_is_byte_identical`
+  - `test_review_stale_done_flips_status`
+  - `test_review_stale_archive_sets_archived_at`
+  - `test_review_stale_empty_exits_0_with_message`
+  - `test_review_stale_non_interactive_treats_remaining_as_skip`
+  - `test_review_stale_unrecognized_input_reprompts_then_skips`
+  - `test_review_stale_presents_three_sessions_in_priority_order` —
+    seeds A(high), B(medium), C(low) all stale; feeds three "skip"
+    lines; asserts the three short_id prefixes appear in stdout in
+    that exact order and all three records are byte-identical
+    afterward (addresses amendment §11.12).
+
+- `tests/test_statusline.py`
+  - `test_statusline_empty_registry_prints_empty_line`
+  - `test_statusline_empty_registry_omits_arrow_and_tasks_nudge` —
+    explicit: the `→  /tasks` suffix is forbidden when pending == 0.
+  - `test_statusline_pending_only_shape`
+  - `test_statusline_pending_and_stale_shape`
+  - `test_statusline_omits_stale_segment_when_zero`
+  - `test_statusline_200_records_under_150ms` — wall-time via
+    `time.perf_counter`; 3 runs, min < 0.15s.
+  - `test_statusline_does_not_invoke_subprocess` — monkeypatches
+    `subprocess.run` to raise; statusline must still succeed.
+
+- `tests/test_config.py`
+  - `test_config_missing_uses_default_4h`
+  - `test_config_overrides_threshold`
+  - `test_config_malformed_falls_back_to_default_and_logs`
+  - `test_config_bad_value_type_falls_back_to_default_and_logs` —
+    types covered: `str`, `float`, `list`, `dict`, `None`, `bool`
+    (bool is explicitly NOT treated as an int per §2.10).
+  - `test_config_zero_or_negative_falls_back_to_default` —
+    parametrized over `0`, `-1`, `-3600` (addresses amendment
+    §11.11).
+  - `test_env_var_overrides_config_file`
+
+Expected total: Sprint 1 (43) + ~95 new tests ≈ 135+ tests.
 
 Run:
 
 ```bash
-pytest -q
+python3 -m pytest -q tests/
 ```
 
-All tests use `tmp_path` and a monkeypatched `HOME` / `CST_REGISTRY_DIR` so they never touch the real `~/.claude`. `tests/conftest.py` additionally asserts at collection time that the test process's `HOME` has been redirected to a `tmp_path` under pytest's basetemp; if a test ever reaches the registry code with the real user `HOME`, the fixture raises `RuntimeError` before any I/O runs.
+All tests MUST pass before handoff. Sprint 1's 43 must remain green;
+any Sprint 1 test whose on-disk record shape assumption changes (only
+the progress fields get added) is updated in-place and still counts
+toward that 43.
 
 ## 7. Stack / tooling decisions
 
-- **Python 3.11+** (ships with macOS 14+ or via Homebrew; matches repo's `python3`).
-- **Stdlib-only for Sprint 1**: `argparse`, `json`, `pathlib`, `os`, `tempfile`, `subprocess`, `datetime`, `uuid`, `re`. `fcntl` is explicitly NOT used in Sprint 1: since each session record lives in its own file and `os.replace` is atomic on POSIX, no advisory locks are needed for the tests and checks we ship. (If a future sprint requires same-record concurrent safety, `fcntl` can be reintroduced then.)
-- **No rich / blessed / click** in Sprint 1 — plain text table via string formatting and `json.dumps` for `--json`. `rich` is introduced in Sprint 3 with the `watch` TUI.
-- **Shell boundary**: `install.sh` is bash; it only does symlinks, directory creation, and delegates JSON merging to a `python3 -m` call into an installer module that uses stdlib `json` (atomic write via tempfile + rename). Malformed-JSON refusal is implemented in Python and the shell wrapper propagates its exit code.
-- **Entry point**: `scripts/cst.py` with a `main()` that dispatches on `argv[1]` (`list`, `set`, `done`, `archive`, `scan`, `hook`) plus `--version`. `~/.local/bin/cst` is a symlink to this file; file has a `#!/usr/bin/env python3` shebang.
-- **Registry path**: `~/.claude/claude-tasks/` by default, overridable via `CST_REGISTRY_DIR` env var (used exclusively by tests).
-- **Version string**: `cst 0.1.0` — exposed via `cst --version` and by a `__version__` constant in `scripts/cst.py`.
-- **No third-party deps declared**; `pyyaml` is NOT needed this sprint.
+- **Python 3.11+** (unchanged from Sprint 1).
+- **Stdlib-only where possible**. The one new import surface is
+  `subprocess` for:
+  - `ps -o pid,tty,comm -A` (live dot).
+  - `osascript` invocation (focus/resume).
+  Tests never invoke real `osascript`; production code does.
+- **No `rich` in Sprint 2**. Multi-line `cst list` uses plain ANSI
+  dim escapes (`\x1b[2m…\x1b[0m`) only when `sys.stdout.isatty()` is
+  true. On non-TTY stdout (pipes, CI, `cst list > file`), the
+  escapes are omitted — the `⤷` / `⚙` markers remain. `rich` lands
+  in Sprint 3 with the `watch` TUI.
+- **AppleScript is inlined**. No `.scpt` files. The osascript
+  commands are Python string literals inside `focus.py` / `resume.py`.
+- **No new third-party deps**. `pyyaml` still not needed.
+- **Platform detection**: single helper `platform_macos.is_macos()`
+  that honors the `CST_FORCE_PLATFORM` test override. All
+  macOS-specific code paths route through it.
+- **Installer** remains bash + `python3 -m` into
+  `scripts/installer.py`. Statusline merge adds one more
+  subcommand to `installer.py`: `merge-statusline`.
+- **Version bump**: `cst --version` prints `cst 0.2.0`.
+- **Error log files** (both non-fatal, append-only, in
+  `~/.claude/claude-tasks/`):
+  - `.hook-errors.log` — already exists from Sprint 1.
+  - `.scanner-errors.log` — NEW. Used by scanner progress extraction,
+    config loader, and gc's unparseable-timestamp path.
 
-## 8. File layout after Sprint 1
+## 8. File layout after Sprint 2
 
 ```
 claude-session-manager/
-├── spec.md                      # (existing, untouched)
-├── _brainstorm-design.md        # (existing, untouched)
-├── sprint_contract.md           # this file
-├── SKILL.md                     # minimal frontmatter + pointer to cst; not expanded this sprint
-├── install.sh
+├── spec.md
+├── _brainstorm-design.md
+├── sprint_1_contract.md                 # archived from Sprint 1
+├── sprint_contract.md                   # THIS file (Sprint 2)
+├── generator_report.md                  # rewritten at Sprint 2 handoff
+├── SKILL.md                             # updated: version, new commands, progress fields
+├── install.sh                           # + statusline wiring
 ├── scripts/
-│   ├── cst.py                   # CLI entry point; dispatches subcommands
-│   ├── registry.py              # per-file JSON CRUD, atomic write, corruption isolation
-│   ├── scanner.py               # ~/.claude/projects/*.jsonl → registry upsert
-│   └── hooks.py                 # session-start and activity handlers (imported by cst.py)
+│   ├── cst.py                           # + list multi-line + --compact,
+│   │                                    #   + statusline/focus/resume/gc/review-stale
+│   │                                    #   + prefix resolver, macOS guard, new --json keys
+│   ├── registry.py                      # + progress field defaults + update refusal
+│   ├── scanner.py                       # + _extract_progress, tool-hint builders,
+│   │                                    #   + scanner error log, 50-line tail window
+│   ├── hooks.py                         # + last_user_prompt from UserPromptSubmit payload
+│   ├── focus.py                         # NEW: iTerm2/Terminal.app osascript + fallbacks
+│   ├── resume.py                        # NEW: new-window-with-cd-and-resume
+│   ├── statusline.py                    # NEW: fast read-only count + format
+│   ├── livedot.py                       # NEW: ps-based tty matching (stdlib subprocess)
+│   ├── gc.py                            # NEW: archived_at-based deletion
+│   ├── review_stale.py                  # NEW: interactive keep/done/archive/skip
+│   ├── config.py                        # NEW: stale_threshold_seconds loader
+│   ├── platform_macos.py                # NEW: is_macos() with CST_FORCE_PLATFORM hook
+│   └── installer.py                     # + merge-statusline subcommand
 └── tests/
-    ├── conftest.py              # tmp HOME / CST_REGISTRY_DIR fixtures
-    ├── test_registry.py
-    ├── test_scanner.py
-    ├── test_cli.py
-    ├── test_hooks.py
-    └── test_installer.py
+    ├── conftest.py                      # unchanged
+    ├── test_registry.py      (extended)
+    ├── test_scanner.py       (extended)
+    ├── test_hooks.py         (extended)
+    ├── test_cli.py           (extended)
+    ├── test_installer.py     (extended)
+    ├── test_focus.py         (NEW)
+    ├── test_resume.py        (NEW)
+    ├── test_live_dot.py      (NEW)
+    ├── test_gc.py            (NEW)
+    ├── test_review_stale.py  (NEW)
+    ├── test_statusline.py    (NEW)
+    └── test_config.py        (NEW)
 ```
 
-No `references/`, `assets/`, or `commands/` directories in Sprint 1 — those arrive in Sprints 2 and 3.
+No `references/` required; SKILL.md remains < 500 lines. No
+`assets/`. No `commands/` (slash commands are Sprint 3).
 
 ## 9. Non-goals for this sprint
 
-Focus/AppleScript, `cst resume`, `cst watch` TUI, statusline command and wiring, slash commands, live-vs-idle dot, stale detection + banner + `review-stale`, `cst gc`, `--pin` window, short-id prefix matching, stale-threshold config file, macOS platform guard — all deferred per §3.
+Slash commands, `cst watch` TUI, `cst watch --pin` — all deferred to
+Sprint 3. After Sprint 2 the only remaining items from the original
+Sprint 1 deferred list are these three.
+
+Also explicitly out of scope for Sprint 2:
+
+- Editing progress fields from any user-facing surface.
+- Any AI inference for progress fields (the spec §7 bans this).
+- Tracking per-window bindings beyond what Sprint 1 captures —
+  terminal app/window/tab/tty are already stored and `cst focus`
+  uses them as-is; no new capture mechanism is added.
+- A dedicated "statusline refresh" hook — statusline is on-demand
+  via Claude Code's existing `statusLine.command`.
 
 ## 10. Risks and assumptions
 
-1. **Hook payload source of truth**: the binding contract (see §2 "Hook stdin payload contract") is that Claude Code delivers a JSON payload on stdin with fields `session_id`, `cwd`, `hook_event_name`, `transcript_path`. Our implementation parses stdin FIRST and treats env vars (`CLAUDE_SESSION_ID`, `CLAUDE_PROJECT_DIR`, `PWD`) as fallback only. If both are absent, the hook logs to `~/.claude/claude-tasks/.hook-errors.log` and exits 0. If both are present but disagree, stdin wins (verified by `test_stdin_takes_priority_over_env`).
-2. **`~/.claude/projects/` directory layout**: the scanner assumes `<project-slug>/<session-uuid>.jsonl`. If the layout differs on the Evaluator's machine, scanner tests still pass (they use fixtures), but `cst scan` against a real `~/.claude` may produce zero records. This is acceptable for Sprint 1 since the hook-based path also populates the registry.
-3. **JSONL `cwd` field**: not always present. When absent, `cwd` is stored as `null`; downstream sprints (focus/resume) will need to handle this.
-4. **Symlink to `~/.local/bin/cst`**: if the directory does not exist the installer creates it. If `~/.local/bin` is not in `$PATH` the installer prints an actionable warning but exits 0 — the smoke test `cst list` is run via an absolute path so the install still passes.
-5. **Concurrency**: per-file atomic writes via `os.replace` are sufficient because each record lives in its own file. We do not serialize writes across different records; the test suite verifies this is safe.
-6. **`settings.json` may not exist**: the installer creates it with `{}` before merging. If it exists but is unparseable, the installer picks policy (a) per §2: exit non-zero, no overwrite, no backup.
-7. **The installer must not require `sudo`**: everything lives under `$HOME`.
-8. **Project-slug decoding is a best-effort heuristic**: the rule defined in §2 handles the common `/abs/path` case; slugs from unusual paths (containing literal `-` in directory names) may decode to a wrong path. For Sprint 1 this only affects the cosmetic `project_name`; Sprint 2 (focus/resume) will need to rely on `cwd` captured directly from hooks/JSONL meta, not on the decoded slug.
-9. **Hook-merge matcher strictness**: the installer uses full-string equality on the command literal, so users who manually wrap our hook (e.g. `sh -c 'cst hook activity && mything'`) will get a duplicate-looking entry on re-install. This is acceptable for Sprint 1; a smarter matcher is out of scope.
+Each risk below includes a concrete mitigation that is testable in
+this sprint, not a hand-wave.
 
-SPRINT_CONTRACT_READY: sprint_contract.md
+1. **Claude Code UserPromptSubmit payload shape.** We assume the
+   payload delivers a `prompt` field (string) containing the
+   submitted text. If the actual field name is `user_prompt` or
+   nested under `message`, the hook handler reads BOTH top-level
+   variants and uses the first that is a non-empty string. If
+   neither is present, the hook still exits 0 and logs once.
+   **Mitigation (testable):** `test_activity_hook_accepts_user_prompt_key_variant`
+   covers the alternate name; the scanner is an independent path to
+   the same fact — worst case the prompt lands with ~2-second lag.
+
+2. **Claude Code transcript JSONL stability.** We depend on:
+   `type == "user"` / `"assistant"`, `message.content` either a
+   string or a list of `{type: "text"|"tool_use", ...}` parts,
+   `tool_use.name` and `tool_use.input`. If a future Claude Code
+   release changes the shape, the scanner falls back to empty
+   progress fields (isolated error log) and lists still work.
+   **Mitigation (testable):**
+   `test_scanner_error_isolated_to_single_transcript` and
+   `test_current_task_hint_empty_when_tool_use_has_no_name` prove
+   the fallbacks don't cascade.
+
+3. **Performance of `ps -A` on busy machines.** Historical `ps` can
+   be slow in exotic environments. We cache the ps output for the
+   duration of a single `cst list` invocation and never run it from
+   the statusline path. **Mitigation (testable):**
+   `test_statusline_does_not_invoke_subprocess` monkeypatches
+   `subprocess.run` to raise and asserts statusline still succeeds;
+   `test_statusline_200_records_under_150ms` asserts the perf
+   budget.
+
+4. **AppleScript + `window_id` authenticity.** Sprint 1 does not
+   populate `terminal.window_id` in any reliable way. `cst focus`
+   therefore degrades to "activate the app" in many real-world
+   cases. **Mitigation (testable):**
+   `test_focus_iterm_no_window_id_falls_back_to_activate` asserts
+   the graceful degrade; `cst resume` is the always-working
+   fallback, and every focus failure path suggests it (see
+   `test_focus_osascript_failure_exits_5_with_resume_hint`).
+
+5. **ISO-8601 timezone handling for `archived_at`.** Sprint 1 stored
+   timestamps with a `Z` suffix (UTC). `cst gc` parses those. If a
+   record somehow got a tz-naive or non-Z timestamp (hand-edit),
+   `gc` logs + skips + exits 0 rather than deleting.
+   **Mitigation (testable):**
+   `test_gc_tolerates_unparseable_archived_at`.
+
+6. **Config file race.** A user writing the config while `cst list`
+   is reading it is atypical. We read, parse, and ignore errors — no
+   lock, no retry. **Mitigation:** the malformed-JSON test and
+   Check 20 demonstrate `cst list` never fails because of config.
+
+7. **Stale threshold env var** (`CST_STALE_THRESHOLD_SECONDS`) is
+   documented internally as tests-only but enforced only at the
+   loader. A user setting it in their shell works and is harmless;
+   we do not advertise it in SKILL.md.
+
+8. **Pre-Sprint-2 records on disk.** Existing records without the
+   three progress-field keys are read as if those keys were `""`.
+   They become persisted only after the next scan or `cst set`.
+   **Mitigation (testable):**
+   `test_read_tolerates_missing_progress_fields` + Check 24.
+
+9. **Glyph availability.** `⤷` (U+2937) and `⚙` (U+2699) are
+   load-bearing for Sprint 2's display. Terminals that can't render
+   them show `?` — acceptable; no further guarantee is made. Tests
+   use literal code points and pass regardless of terminal
+   rendering.
+
+10. **Sprint 1 Check 7 script compatibility.** Adding a leading
+    live-dot column to `cst list` stdout breaks the one-off
+    `/tmp/run_checks.sh` from Sprint 1. Check 27 re-verifies Sprint 1
+    contracts via the pytest suite instead (forward-compatible).
+    **Mitigation (testable):** Sprint 1 pytest tests MUST pass
+    unchanged in Check 27; any that had TSV-ordering assumptions are
+    updated to use `cst list --json` and remain part of the Sprint 1
+    test count.
+
+11. **"Fresher wins" for `last_user_prompt`.** Resolved in §2.2:
+    the scanner only overwrites `last_user_prompt` when JSONL mtime
+    is strictly newer than the record's `last_activity_at` AND the
+    extracted value is non-empty AND differs from the stored value.
+    The hook bumps `last_activity_at` on write, protecting its
+    value until Claude Code flushes a genuinely newer transcript
+    line. **Mitigation (testable):**
+    `test_scanner_does_not_regress_hook_written_prompt`,
+    `test_scanner_overwrites_prompt_when_jsonl_is_newer`, and
+    Check 29.
+
+12. **`ps` output format drift.** macOS `ps -o pid,tty,comm -A`
+    uses `??` for processes with no controlling tty. Our tty matcher
+    rejects that sentinel. **Mitigation (testable):**
+    `test_live_dot_ignores_non_claude_processes`,
+    `test_live_dot_skips_rows_with_question_tty`, and
+    `test_live_dot_comm_parsing_with_spaces` cover the parsing
+    surface per §2.5.
+
+13. **AppleScript injection via `window_id` / `cwd` / `session_id`.**
+    A hand-edited or hostile record could carry a `window_id` that
+    is a string like `1) activate end tell -- …` attempting to
+    break out of the AppleScript. §2.8 pins three escape layers:
+    shell-layer `shlex.quote`, AppleScript-layer `"`/`\`
+    escaping, and `window_id`/`tab_id` forced through `int()`
+    before interpolation. **Mitigation (testable):**
+    `test_focus_window_id_is_integer_only`,
+    `test_resume_shell_escapes_cwd`,
+    `test_resume_applescript_escapes_backslash_and_quote`,
+    `test_resume_rejects_cwd_with_newline_or_null`.
+
+14. **Hook invoked for unknown `session_id`.** §2.3 picks the
+    create-skeleton branch: the hook writes a minimal record so
+    the session shows up in `cst list` without waiting for the
+    scanner. **Mitigation (testable):**
+    `test_activity_hook_on_unknown_session_id`.
 
 ## 11. Evaluator amendments (binding)
 
 **Verdict: AMEND**
 
-The contract covers the major DoD bullets it claims to cover, but several checks are weaker than the corresponding DoD bullet or than what a skeptical user would demand, and three gaps are not addressed at all. The following amendments are required before coding begins. Each amendment cites either a DoD bullet from `spec.md` §8 or a concrete adversarial probe.
+The contract is substantially stronger than a typical first draft — the scanner-owns-progress rule is unambiguous, truncation has real code-point tests, focus/resume have exit-code discipline, and Check 27 protects the Sprint 1 surface. But several load-bearing behaviors are under-specified or under-tested, and three of the adversarial probes the user explicitly called out are not observable-checked. Amend before coding.
 
 ### Required amendments
 
-1. **Extend Check 4 to cover `note`, `tags`, and `status`** (DoD: *"subsequent scans no longer overwrite the title, priority, status, note, or tags"*). Current Check 4 only probes `title` and `priority`. After `cst set ... --note "keep me" --tags a,b --status blocked`, the test must re-scan and assert all of `title`, `priority`, `status`, `note`, and `tags` survive unchanged. Mirror this in `tests/test_scanner.py::test_never_overwrites_user_fields`.
+1. **Pin the exact osascript strings for `cst focus` and `cst resume`** (user-directed focus area 3 and 4; spec §8 requires the iTerm2 and Terminal.app DoD bullets work for real). §2.8 says "unit-tested via captured args" but the contract nowhere specifies what those args are. Without a pinned template the Generator could ship any script that passes the mock. Add to §2.8 the literal osascript snippets (or an unambiguous Python f-string template) for each of:
+   - iTerm2 focus with `window_id`: e.g. `tell application "iTerm2" to tell window id <W> to select`. Specify the activation step too.
+   - iTerm2 focus without `window_id`: `tell application "iTerm2" to activate`.
+   - Terminal.app focus with `window_id` + optional `tab_id`.
+   - iTerm2 resume (new window running `cd <cwd> && claude --resume <session_id>`).
+   - Terminal.app resume fallback.
+   Add `test_focus_iterm_osascript_string_matches_template` (regex-match the captured `_run_osascript` args) so a drift in the template breaks a test.
 
-2. **Check 5 must verify the ORIGINAL BYTES survive in the renamed corrupt file** (spec Feature table: *"preserved for inspection"*). Replace the current `grep` on filename with:
+2. **`cst focus`/`cst resume` must shell-escape the id, cwd, and window_id** (adversarial: a session id or cwd containing `"` breaks an unescaped AppleScript). The contract has `test_resume_shell_escapes_cwd` but no matching escape test for `focus`, and the contract does not specify HOW escaping is done (AppleScript string literal escaping is different from POSIX shell escaping; the `cd` inside the AppleScript needs shell-level quoting). Pin the escaping helper (e.g. `shlex.quote` for the shell portion, doubled `"` for AppleScript strings) in §2.8 and add `test_focus_window_id_is_integer_only` (refuse non-int `window_id` to close AppleScript injection).
+
+3. **Add an observable check for ambiguous prefix blocking every mutating subcommand** (spec §8: *"An ambiguous prefix lists candidate sessions and exits non-zero without mutating anything"* — "any command that takes a session id", not just `set`). Current Check 12 only exercises `cst set`. Add Check 12b that runs `cst done aabbccdd`, `cst archive aabbccdd`, `cst focus aabbccdd`, and `cst resume aabbccdd` against the same two-record ambiguous fixture and asserts rc==3, "ambiguous" in stderr, and SHA256 of both record files byte-identical after each invocation. (`cst focus`/`cst resume` should still exit 3 on ambiguity BEFORE the macOS-guard / terminal-lookup path — specify this ordering in §2.8 and §2.7.)
+
+4. **Add an observable check for `cst gc` on an empty / zero-archived registry** (user-directed adversarial probe). Today only `test_gc_deletes_only_old_archived` touches this path and it's a pytest test with fixture records. Add an observable Check 21b:
    ```bash
-   orig_bytes='{this is not valid json'
-   renamed=$(ls ~/.claude/claude-tasks/ | grep -E '^badfile\.json\.corrupt-[0-9]+$' | head -n1)
-   test -n "$renamed" || { echo FAIL_NO_RENAME; exit 1; }
-   diff <(printf '%s\n' "$orig_bytes") "$HOME/.claude/claude-tasks/$renamed" || { echo FAIL_BYTES_CHANGED; exit 1; }
-   echo CORRUPT_BYTES_PRESERVED
+   rm -rf "$HOME/.claude/claude-tasks"; mkdir -p "$HOME/.claude/claude-tasks"
+   out=$(cst gc); rc=$?
+   [ "$rc" = "0" ] || { echo FAIL_RC; exit 1; }
+   echo "$out" | grep -qE 'deleted 0' || { echo FAIL_MSG; exit 1; }
+   # And with only NON-archived records present:
+   CLAUDE_SESSION_ID=dddddddd-dddd-dddd-dddd-dddddddddddd CLAUDE_PROJECT_DIR=/tmp/g cst hook session-start < /dev/null
+   before=$(shasum -a 256 "$HOME/.claude/claude-tasks/dddddddd-"*.json)
+   cst gc; rc=$?
+   after=$(shasum -a 256 "$HOME/.claude/claude-tasks/dddddddd-"*.json)
+   [ "$rc" = "0" ] && [ "$before" = "$after" ] || { echo FAIL_NOARCH_MUTATED; exit 1; }
+   echo GC_EMPTY_OK
    ```
-   Additionally assert `cst list` stdout contains rows from good sibling files in the same run.
 
-3. **Check 6 must verify the error was logged, not just swallowed** (DoD: *"Failing hooks do not block the user's Claude Code session"* — but silent swallowing makes debugging impossible, and the contract itself promises the log file). After the two `env -i` calls, assert `~/.claude/claude-tasks/.hook-errors.log` exists and contains a non-empty line timestamped within the last 60 seconds mentioning the missing env var or exception class. Mirror in `tests/test_hooks.py::test_session_start_hook_exits_zero_on_missing_env`.
+5. **Specify the "fresher wins" rule concretely** (spec §5: *"Also refreshed from Claude Code's user-prompt-submit signal; whichever signal is fresher wins"*). §2.3 and risk §11 punt: hook writes, then the next scanner pass unconditionally overwrites with whatever JSONL currently has, even if the hook's value was strictly newer (the hook fires before Claude Code flushes the new user line to JSONL). Either:
+   - (a) Add a per-record `last_user_prompt_source_at` timestamp and have the scanner only overwrite `last_user_prompt` when its source (JSONL mtime or the most recent user line's timestamp, whichever is applicable) is strictly newer than the stored `last_user_prompt_source_at`; OR
+   - (b) Have the scanner ONLY overwrite `last_user_prompt` when the extracted value is non-empty AND different from the stored one AND the JSONL mtime is newer than the stored `last_activity_at`. (Simpler — pick this.)
+   Document the chosen rule in §2.2 and add `test_scanner_does_not_regress_hook_written_prompt` — pre-seed a record with a hook-written prompt, then run the scanner against a JSONL whose user message is OLDER than the hook write: scanner must NOT clobber the hook's prompt.
 
-4. **Add Check 11 — two distinct `CLAUDE_SESSION_ID`s produce two distinct records.** A scanner or hook that silently merges under one id would pass every current check. Probe:
+6. **`--json` must omit the stale banner AND support `--all` / `--stale` in combination** (§2.4: "Under `--json` the footer is omitted"). Add an observable assertion:
    ```bash
-   CLAUDE_SESSION_ID=33333333-3333-3333-3333-333333333333 CLAUDE_PROJECT_DIR=/tmp/a cst hook session-start
-   CLAUDE_SESSION_ID=44444444-4444-4444-4444-444444444444 CLAUDE_PROJECT_DIR=/tmp/b cst hook session-start
-   ls ~/.claude/claude-tasks/ | grep -E '^(3{8}-|4{8}-)' | wc -l    # must be 2
-   cst list | grep -cE '^(33333333|44444444)'                        # must be 2
+   cst list --json | python3 -c "import sys,json; json.load(sys.stdin)"   # must parse cleanly
+   cst list --stale --json | python3 -c "..."   # must parse cleanly
+   cst list --all --json   | python3 -c "..."
    ```
+   and assert that none of these outputs contain the literal `⚠` or `run 'cst review-stale'`. Current Check 23 only exercises default `cst list --json`.
 
-5. **Add Check 12 — installer from a truly fresh state** (DoD: *"on a clean macOS machine"* and explicit risk §10.6). Currently no check covers the case where `~/.claude/settings.json` does not exist at all. Probe against a `HOME=$tmp` sandbox:
+7. **`cst hook activity` behavior when no prior record exists for the session_id** (edge case not in §2.3). Today the hook "bumps `last_activity_at`" — implying an in-place update. If the record doesn't yet exist (hook fires before session-start hook on a brand-new session, or in the test sandbox) should it:
+   - (a) Create a skeleton record with just `session_id` + `last_activity_at` + `last_user_prompt`? OR
+   - (b) Log one warning and exit 0 without writing?
+   Pick and document in §2.3; add `test_activity_hook_on_unknown_session_id` covering the chosen branch.
+
+8. **Add an observable check for progress-field display under unicode / emoji content** (user-directed probe "unicode prompt with emojis/RTL displayed correctly"). CJK truncation is tested but the `cst list` multi-line RENDER path with emojis is not. Add:
    ```bash
-   TMPH=$(mktemp -d); HOME=$TMPH bash install.sh
-   test -f "$TMPH/.claude/settings.json"
-   python3 -c "import json,os; s=json.load(open(os.environ['TMPH']+'/.claude/settings.json')); \
-     assert 'SessionStart' in s['hooks'] and 'UserPromptSubmit' in s['hooks']; print('FRESH_OK')"
+   python3 -c "
+   import json, pathlib, os
+   p = pathlib.Path(os.environ['HOME'], '.claude/projects/-tmp-demo/${SID}.jsonl')
+   p.write_text(json.dumps({'type':'user','message':{'content':'fix 🐛 login 한글 العربية'},'cwd':'/tmp/demo'}) + '\n')
+   "
+   cst scan >/dev/null
+   out=$(cst list)
+   echo "$out" | grep -qF '🐛' || { echo FAIL_EMOJI; exit 1; }
+   echo "$out" | grep -qF '한글'  || { echo FAIL_CJK;   exit 1; }
+   echo "$out" | grep -qF 'العربية' || { echo FAIL_RTL; exit 1; }
+   echo UNICODE_DISPLAY_OK
    ```
-   Add matching `tests/test_installer.py::test_install_from_missing_settings_json` and `::test_install_from_missing_claude_dir`.
+   The contract need not guarantee visual RTL shaping — only that the bytes round-trip to stdout without `UnicodeEncodeError` and without stripping.
 
-6. **Add Check 13 — installer is defensive against malformed `settings.json`.** A user with a hand-edited broken settings file must not have it overwritten and must get a clear error. Probe:
-   ```bash
-   echo '{not: valid' > ~/.claude/settings.json
-   bash install.sh; rc=$?
-   # Installer must either: (a) exit non-zero with a clear message AND leave the malformed file untouched,
-   # or (b) back it up to settings.json.bak-<ts> before rewriting. Silent overwrite is FAIL.
-   ```
-   Document which of (a) or (b) is chosen in §2 and test it.
+9. **Statusline installer must assert the full wired object, not just the `command` string** (§2.9: *"set `"statusLine": {"type": "command", "command": "cst statusline", "padding": 0}`"*). Check 18's `FRESH_SET` asserts only `command == 'cst statusline'`. Extend to assert `type == 'command'` and `padding == 0`; otherwise a Generator that writes just `{"command": "cst statusline"}` passes the check but produces a non-working `settings.json` for Claude Code.
 
-7. **Clarify and test the hook stdin payload contract** (risk §10.1 is load-bearing, not just a risk). Claude Code's `SessionStart` and `UserPromptSubmit` hooks deliver a JSON payload on stdin with at least `session_id`, `cwd`, `hook_event_name`, and `transcript_path` fields. Env-var-only parsing will silently no-op in real use and break DoD *"new session record to appear in the registry within seconds"*. Required:
-   - §2 must state explicitly: "`cst hook session-start` reads stdin as JSON (`session_id`, `cwd`, `transcript_path`) with env vars as fallback; `cst hook activity` reads stdin JSON (`session_id`) with env var fallback."
-   - Add a check that pipes a representative JSON payload on stdin with no env vars set and confirms the record is created:
-     ```bash
-     echo '{"session_id":"55555555-5555-5555-5555-555555555555","cwd":"/tmp/x","hook_event_name":"SessionStart","transcript_path":"/tmp/x.jsonl"}' \
-       | env -i PATH="$PATH" cst hook session-start
-     test -f ~/.claude/claude-tasks/55555555-5555-5555-5555-555555555555.json
-     ```
-   - Add `tests/test_hooks.py::test_session_start_reads_stdin_payload` and `::test_activity_reads_stdin_payload`.
+10. **Define "`comm` basename matches exactly `claude`" precisely** (§2.5). On macOS, `ps -o comm` returns the full executable path truncated to a column width; `comm` basename for `/Applications/Claude.app/.../claude` is `claude`, but for `node /path/claude-cli.js` it's `node`. The contract says "exactly `claude`" — good — but does not specify column parsing robustness (tty column is whitespace-separated and `comm` can contain spaces on macOS when truncated). Pin the parsing: "split the line on whitespace; PID in col 1, TTY in col 2, and basename of `comm` is `os.path.basename(rest_of_line)`". Add `test_live_dot_comm_parsing_with_spaces` fixture.
 
-8. **Scanner edge-case tests** (DoD: *"A newly detected session with no user title has a non-empty title"* — must hold for all plausible transcript shapes):
-   - `test_title_from_later_user_message_when_first_is_assistant` — JSONL whose first line is `{"type":"assistant",...}` then a `user` line: title must come from the `user` line, not blank.
-   - `test_empty_jsonl_falls_back_to_project_name` — zero-byte file: title == project_name, no crash.
-   - `test_non_uuid_filename_is_ignored` — `~/.claude/projects/x/notauuid.jsonl`: scanner must skip, not crash, not create a record.
+11. **Config loader must reject negative / zero `stale_threshold_seconds`** (§2.10 says "not a positive int → default"). Current test is `test_config_bad_value_type_falls_back_to_default_and_logs` — this covers type but not value range. Add `test_config_zero_or_negative_falls_back_to_default` with explicit `0` and `-1` cases.
 
-9. **Strengthen Check 7 (sort order) with a machine-checkable assertion.** The current phrasing ("Evaluator will parse the output") is not reproducible. Either:
-   - Freeze the output format enough to parse (e.g. short-id in column 1, priority in column 2, tab-separated), and document this in §2; OR
-   - Add `cst list --json` for Sprint 1 and assert ordering on parsed JSON in the test harness.
-   Add `tests/test_cli.py::test_list_sort_order_high_medium_low_then_recency` using the chosen representation.
-
-10. **Fix Check 9 to actually assert** (currently uses `|| true` which swallows failures; `grep -c` returns 0 when no match which is masked). Replace with explicit assertions:
-    ```bash
-    cst done 22222222-2222-2222-2222-222222222222
-    [ "$(cst list | grep -c 22222222)" = "1" ] || { echo FAIL_DONE_HIDDEN; exit 1; }
-    cst archive 22222222-2222-2222-2222-222222222222
-    [ "$(cst list | grep -c 22222222)" = "0" ] || { echo FAIL_ARCHIVE_VISIBLE; exit 1; }
-    [ "$(cst list --all | grep -c 22222222)" = "1" ] || { echo FAIL_ALL_MISSING; exit 1; }
-    echo LIFECYCLE_OK
-    ```
-
-11. **Document the project-slug → project_name decoding rule.** §2 states `project_name` comes "from the project-slug directory name" but Claude Code encodes paths like `/tmp/fake-proj` as `-tmp-fake-proj`. Specify the exact rule (e.g. "strip leading `-`, replace `-` with `/`" or "use slug as-is") and add `tests/test_scanner.py::test_project_name_derivation` so Sprint 2 focus/resume sprints have a stable contract to build on.
-
-12. **Settings.json hook-merge idempotency must match by full command string, not substring.** §2 says "matched by command string" — make this exact (full-string equality on `hooks[].hooks[].command`). A substring match like `'session-start' in c` (as used in Check 1) would break if a user has an unrelated `cst hook session-start --debug` entry; the installer's matcher must be stricter than the check's matcher. Document the exact rule in §2.
+12. **`cst review-stale` must reject partial matches / be order-stable** (spec §3 Flow D: "one at a time" — user should not see the same session re-presented or skipped sessions silently promoted). The contract says "priority then recency" ordering but never pins it in a check. Add to Check 11:
+    - Seed two stale sessions (A with priority high, B with priority medium).
+    - `printf 'skip\nkeep\n' | cst review-stale` must present A before B (assert by reading stdout prompts with short_id prefix).
+    - After the run, neither record's SHA256 has changed.
+    Currently Check 11 only uses one session.
 
 ### Out-of-scope polish notes (non-binding)
 
-- Consider adding `cst --version` for Sprint 1 to make install verification trivial.
-- `fcntl` advisory locks listed in §7 are mentioned but `test_concurrent_writes` only tests distinct records (where no lock is needed). Either drop `fcntl` from the stack list for Sprint 1 or add a same-record concurrent test.
-- The conftest should fail loudly if `HOME` isn't redirected, to prevent a rogue test from ever touching the real `~/.claude`.
+- Risk §10 is honest about `sprint_1_contract.md` not being here — good; the cross-reference is fine.
+- The `→  /tasks` suffix in statusline is load-bearing per spec §6.3 but the Generator could elide the nudge arrow under the zero-pending branch (it already does). Consider adding a check that the arrow is NEVER present when `pending == 0`.
+- `test_scanner_limits_tail_window_to_50_lines` is a great boundary test; consider asserting the exact last-50-line window (not last-49 or last-51).
+- Risk §9: "terminals that can't render them show `?`" — consider a `CST_ASCII_MARKERS=1` env to swap `⤷`/`⚙` for ASCII `>` / `!` in pathological terminals. Not required for Sprint 2.
+- `cst gc` summary message: pin the exact format in a check (currently Check 21 only asserts file existence). Minor.
 
 CONTRACT_REVIEW_READY: sprint_contract.md
 
@@ -615,27 +2072,28 @@ CONTRACT_REVIEW_READY: sprint_contract.md
 
 **Verdict: APPROVE**
 
-All 12 binding amendments from §11 are substantively addressed. Per-amendment status:
+All 12 binding amendments from §11 are substantively satisfied. The contract now pins AppleScript templates as literal multi-line text with distinct shell+AppleScript escape layers, implements a concrete "fresher wins" rule that tests both directions, and adds the missing observable checks (12b, 21b, 28, 29, 30). Per-amendment status:
 
-- #1 ✓ satisfied — Check 4 (§5) now asserts `title`, `priority`, `status`, `note`, `tags` all survive; `test_never_overwrites_user_fields` updated to check all five.
-- #2 ✓ satisfied — Check 5 does a byte-for-byte comparison (`[ "$got" = "$orig_bytes" ]`) on the renamed file, and also asserts good sibling rows still render in the same `cst list` invocation.
-- #3 ✓ satisfied — Check 6 reads `.hook-errors.log`, asserts non-empty, asserts a timestamp within the last 60s, and asserts a line mentions `session_id`/`Exception`/`KeyError`/`missing`; `test_session_start_hook_exits_zero_on_missing_env` mirrors it.
-- #4 ✓ satisfied — Check 11 runs two distinct-UUID hook invocations and asserts exactly 2 files and 2 rows in `cst list --json`.
-- #5 ✓ satisfied — Check 12 runs `HOME=$TMPH bash install.sh` against a fresh dir and asserts both `.claude/settings.json` is created and both hook event keys are populated; `test_install_from_missing_settings_json` and `test_install_from_missing_claude_dir` added.
-- #6 ✓ satisfied — §2 documents policy (a); Check 13 asserts non-zero exit, byte-identical file, and absence of any `settings.json.bak-*`.
-- #7 ✓ satisfied — §2 includes a binding "Hook stdin payload contract" paragraph; Check 14 pipes JSON with `env -i` (no env vars set at all) and asserts the record is created; `test_session_start_reads_stdin_payload`, `test_activity_reads_stdin_payload`, and `test_stdin_takes_priority_over_env` added.
-- #8 ✓ satisfied — §2 scanner section spells out the title-seeding rule; all three edge-case tests (`test_title_from_later_user_message_when_first_is_assistant`, `test_empty_jsonl_falls_back_to_project_name`, `test_non_uuid_filename_is_ignored`) are in `tests/test_scanner.py`.
-- #9 ✓ satisfied — `cst list --json` is a binding Sprint 1 deliverable; Check 7 asserts the exact title ordering on parsed JSON; `test_list_sort_order_high_medium_low_then_recency` added.
-- #10 ✓ satisfied — Check 9 uses `[ "$(... | grep -c)" = "N" ] || { echo FAIL_*; exit 1; }` with no `|| true` swallowing.
-- #11 ✓ satisfied — §2 defines the exact decoding rule (strip one leading `-`, replace remaining `-` with `/`, take basename); `test_project_name_derivation` added with three slug cases; risk §10.8 acknowledges the ambiguity with literal-`-` directories as a Sprint-1 cosmetic limitation.
-- #12 ✓ satisfied — §2 installer section defines full-string-equality matching and forbids substring; Check 1 uses `.count('cst hook session-start') == 1`; `test_install_does_not_treat_substring_match_as_duplicate` added.
+- #1 ✓ satisfied — §2.8 pins five focus templates + two resume templates as literal multi-line AppleScript with `<W>` / `<T>` / `<SHELL_CMD>` slot markers. `test_resume_iterm_osascript_string_matches_template` and `test_resume_terminal_app_osascript_string_matches_template` do byte-pin assertions. **Minor note**: the focus side has no parallel `test_focus_iterm_osascript_string_matches_template` in the enumerated test harness; §2.8's binding text ("Tests assert byte-for-byte equality ... Drift in the template BREAKS a test") means the Generator still owes this — added below as a non-blocking nit.
+- #2 ✓ satisfied — §2.8 "Escaping / injection hardening" pins two distinct quoting layers: `shlex.quote` for the POSIX shell string, `\\` + `\"` for the AppleScript string literal; integer hardening via `int()` + `f"{n:d}"`. `session_id` validated `^[0-9a-f-]{36}$`; cwd validated for newline/null. Tests: `test_focus_window_id_is_integer_only`, `test_resume_applescript_escapes_backslash_and_quote`, `test_resume_rejects_cwd_with_newline_or_null`, parametrized `test_resume_shell_escapes_cwd` over five dangerous characters.
+- #3 ✓ satisfied — Check 12b loops over `set`/`done`/`archive`/`focus`/`resume` with the two-record ambiguous fixture AND `CST_FORCE_PLATFORM=linux` (forcing focus/resume down the non-macOS path so the test can only pass if the resolver fires first). Asserts exit 3, "ambiguous" in stderr, both records byte-identical. §2.8 pins the resolver-before-platform-guard ordering. `test_focus_ambiguous_prefix_exits_3_before_platform_guard` + `test_resume_ambiguous_prefix_exits_3_before_platform_guard` mirror.
+- #4 ✓ satisfied — Check 21b covers (a) zero-record registry and (b) all-non-archived registry. Asserts exit 0, byte-identical SHA256 on the non-archived record, exact summary string `cst gc: deleted 0 record(s); kept 0 archived record(s) still within the 7-day window`. Also closes the polish note about pinning the gc summary format (now enforced in both Check 21 and 21b via regex).
+- #5 ✓ satisfied — §2.2 rule 3 adopts option (b) unambiguously: scanner overwrites only when extracted value is non-empty AND differs from stored AND JSONL mtime > stored `last_activity_at`. Check 29 tests BOTH directions: seeds scanner-written prompt → hook writes newer prompt → re-scan against the now-older transcript does NOT clobber (`FAIL_REGRESSION`); then appends a newer user line, bumps JSONL mtime to the future, re-scans → scanner correctly overwrites (`FAIL_FRESH_WIN`). Test harness adds `test_scanner_does_not_regress_hook_written_prompt`, `test_scanner_overwrites_prompt_when_jsonl_is_newer`, and `test_scanner_does_not_overwrite_when_extracted_value_equals_stored`.
+- #6 ✓ satisfied — Check 23 loops over `""`, `--all`, `--stale`, `--all --stale`; asserts JSON parses, no `⚠` or `run 'cst review-stale'` chrome leaks, and full Sprint 2 schema present on every row.
+- #7 ✓ satisfied — §2.3 picks option (a) explicitly: activity hook on an unknown `session_id` creates a skeleton via `new_record(sid)` with `last_activity_at=now`, optional truncated `last_user_prompt`, and null terminal/cwd. `test_activity_hook_on_unknown_session_id` exercises the branch.
+- #8 ✓ satisfied — Check 28 round-trips 🐛 (emoji), 한글 (CJK), and العربية (RTL) through `cst list` AND `cst list --json`. `PYTHONIOENCODING=utf-8` is pinned to make the check robust to `LANG=C` CI environments.
+- #9 ✓ satisfied — Check 18 asserts the full statusLine object (`type == 'command'`, `command == 'cst statusline'`, `padding == 0`) AND `set(sl.keys()) == {'type','command','padding'}` — rejecting both missing keys and stray extra keys, in both fresh-install and idempotent-rerun phases.
+- #10 ✓ satisfied — §2.5 pins parsing: `line.split(None, 2)`, PID regex `^[0-9]+$`, tty sentinels (`?`/`??`/`-`) skipped, `ttysN`/`ttyN`/`pts/N` prepended with `/dev/`, basename of col 3 compared to `"claude"`. Tests: `test_live_dot_comm_parsing_with_spaces` (`/Applications/Claude Helper/claude`), `test_live_dot_ignores_non_claude_processes` (includes `node /path/claude-cli.js`), `test_live_dot_skips_rows_with_question_tty`, `test_live_dot_skips_malformed_pid`.
+- #11 ✓ satisfied — §2.10 binds `type(v) is int` (rejecting `bool`) AND strictly positive (rejecting `0` and negatives); each bad path logs one warning to `.scanner-errors.log`. Check 30 parametrizes over `0`, `-1`, `-3600`, `true`, `1.5`, `"3600"`; asserts exit 0, default behavior preserved (90-min-old session is NOT flagged stale), and log entry present. `test_config_zero_or_negative_falls_back_to_default` + `test_config_bad_value_type_falls_back_to_default_and_logs` (now including `bool`) mirror.
+- #12 ✓ satisfied — Check 11 Phase B seeds three stale records (A=high, B=medium, C=low), feeds three `skip` lines, asserts line-number ordering via `grep -n` + `cut` (A before B before C), all three records byte-identical afterward, and short-read EOF fallback exits 0. `test_review_stale_presents_three_sessions_in_priority_order` mirrors.
 
-### Non-blocking nits for the Generator to keep in mind while coding
+### Non-blocking nits for the Generator to address while coding
 
-- Check 6 uses `datetime.datetime.utcnow()` but the hook's logging code isn't pinned to UTC in the contract. Recommend logging in UTC (with a trailing `Z`) to keep this check non-flaky; if the implementation logs local time the check's 60s window can still pass in most timezones but will be brittle around DST transitions.
-- Check 5 compares a no-trailing-newline write (`printf '%s'`) against `$(cat)` (which strips trailing newlines) — this works today but is load-bearing on shell semantics; consider `cmp` instead of string equality in a follow-up.
-- Risk §10.9: users who wrap the hook with `sh -c '... && ...'` will get duplicates on reinstall. Acceptable for Sprint 1 per the contract, but worth surfacing in install output ("found N existing hook entries; appended 2 new entries") so users notice.
+- Test harness for `tests/test_focus.py` is missing a template-match test analogous to `test_resume_iterm_osascript_string_matches_template`. §2.8's binding clause already promises "byte-for-byte equality ... drift BREAKS a test"; please add `test_focus_iterm_osascript_string_matches_template` and `test_focus_terminal_app_osascript_string_matches_template` (with both `window_id` present and `window_id=null` variants) so the focus templates are enforceable.
+- Check 29's "future mtime" step (`future = time.time() + 60`) is pragmatic, but some filesystems round mtime to the nearest second and some CI schedulers reject future-dated files; if the check proves flaky, use a stored `last_activity_at` that is explicitly 2 hours in the past before the second scan.
+- `test_config_bad_value_type_falls_back_to_default_and_logs` now covers bool — good — but also verify the log records WHY (a line containing `stale_threshold_seconds` and either `type` or `bool` so the user can diagnose from the log alone).
+- `cst resume` does not validate that the `session_id` resolved to the record matches the one it interpolates into `claude --resume` — this is a paranoia check; the prefix resolver already guarantees it. No amendment; just worth a one-line assert in resume.py.
 
-Generator may now begin coding Sprint 1.
+Generator may now begin coding Sprint 2.
 
 RE_REVIEW_READY: sprint_contract.md
