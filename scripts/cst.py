@@ -48,11 +48,10 @@ ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 def _relative_time(iso: str | None) -> str:
     if not iso:
         return "-"
-    try:
-        t = _dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
-    except (TypeError, ValueError):
+    t = registry.parse_iso_z(iso) if isinstance(iso, str) else None
+    if t is None:
         return iso
-    delta = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - t
+    delta = _dt.datetime.now(_dt.timezone.utc) - t
     sec = int(delta.total_seconds())
     if sec < 0:
         sec = 0
@@ -126,6 +125,82 @@ def _resolve_id_or_exit(prefix: str) -> str:
 
 _AUTOSCAN_INTERVAL = 30.0  # seconds
 
+_PRI_STYLE = {"high": "bold red", "medium": "yellow", "low": "dim"}
+_STATUS_STYLE = {
+    "in_progress": "green",
+    "blocked": "red",
+    "waiting": "yellow",
+    "done": "dim",
+    "stale": "bold yellow",
+}
+
+
+def _render_plain_multiline(display_rows: list[dict]) -> None:
+    """Plain-text multi-line output — used when stdout is not a TTY."""
+    for d in display_rows:
+        rec = d["rec"]
+        status = "stale" if d["stale"] else (rec.get("status") or "in_progress")
+        headline = _headline(rec, _dot(d["live"]), status)
+        sys.stdout.write("\t".join(headline) + "\n")
+        lup = (rec.get("last_user_prompt") or "").strip()
+        if lup:
+            sys.stdout.write(f"\t\u2937 {lup}\n")
+        cth = (rec.get("current_task_hint") or "").strip()
+        if cth:
+            sys.stdout.write(f"\t\u2699 {cth}\n")
+
+
+def _render_pretty(display_rows: list[dict]) -> None:
+    """Rich Table rendering for `cst list` (TTY default)."""
+    if not sys.stdout.isatty():
+        _render_plain_multiline(display_rows)
+        return
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
+        _render_plain_multiline(display_rows)
+        return
+
+    console = Console()
+    width = console.size.width
+    tbl = Table(show_header=True, header_style="bold cyan", box=None, pad_edge=False, expand=True)
+    tbl.add_column("", width=1, no_wrap=True)
+    tbl.add_column("ID", style="green", width=8, no_wrap=True)
+    tbl.add_column("Pri", width=6, no_wrap=True)
+    tbl.add_column("Status", width=12, no_wrap=True)
+    tbl.add_column("Title", ratio=3, no_wrap=True, overflow="ellipsis")
+    tbl.add_column("Project", style="blue", width=22, no_wrap=True, overflow="ellipsis")
+    tbl.add_column("When", style="dim", width=10, no_wrap=True)
+
+    for d in display_rows:
+        rec = d["rec"]
+        status = "stale" if d["stale"] else (rec.get("status") or "in_progress")
+        pri = rec.get("priority") or "medium"
+        sid = (rec.get("session_id") or "")[:8]
+        title = (rec.get("title") or "").replace("\n", " ")
+        proj = rec.get("project_name") or "-"
+        rel = _relative_time(rec.get("last_activity_at"))
+        dot = Text("●" if d["live"] else "○", style="green bold" if d["live"] else "dim")
+        tbl.add_row(
+            dot,
+            sid,
+            Text(pri, style=_PRI_STYLE.get(pri, "")),
+            Text(status, style=_STATUS_STYLE.get(status, "")),
+            title,
+            proj,
+            rel,
+        )
+        lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
+        cth = (rec.get("current_task_hint") or "").strip().replace("\n", " ")
+        if lup:
+            tbl.add_row("", "", "", "", Text(f"⤷ {lup}", style="dim italic", no_wrap=True, overflow="ellipsis"), "", "")
+        if cth:
+            tbl.add_row("", "", "", "", Text(f"⚙ {cth}", style="dim cyan", no_wrap=True, overflow="ellipsis"), "", "")
+
+    console.print(tbl)
+
 
 def _maybe_autoscan() -> None:
     """Run scanner if the last scan is stale. Silent on any failure."""
@@ -173,19 +248,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         sys.stdout.write("(no sessions)\n")
         return 0
 
-    for d in display_rows:
-        rec = d["rec"]
-        display_status = "stale" if d["stale"] else (rec.get("status") or "in_progress")
-        headline = _headline(rec, _dot(d["live"]), display_status)
-        sys.stdout.write("\t".join(headline) + "\n")
-        if args.compact:
-            continue
-        lup = rec.get("last_user_prompt") or ""
-        if lup:
-            sys.stdout.write(f"\t\u2937 {lup}\n")
-        cth = rec.get("current_task_hint") or ""
-        if cth:
-            sys.stdout.write(f"\t\u2699 {cth}\n")
+    if args.compact:
+        for d in display_rows:
+            rec = d["rec"]
+            display_status = "stale" if d["stale"] else (rec.get("status") or "in_progress")
+            headline = _headline(rec, _dot(d["live"]), display_status)
+            sys.stdout.write("\t".join(headline) + "\n")
+    else:
+        _render_pretty(display_rows)
 
     # Stale banner: count from ALL non-archived rows, NOT the filtered
     # --stale view (else --stale and default would both hide/show it).
