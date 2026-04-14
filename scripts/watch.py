@@ -39,14 +39,18 @@ REFRESH_SECONDS = 2.0
 def _load_rows() -> list[dict]:
     import registry as _registry
     import livedot as _livedot
+    import windows as _windows
     try:
         rows = _registry.sorted_records(include_archived=False)
     except Exception:
         return []
     live_ttys = _livedot.live_ttys()
+    open_ids = _windows.open_short_ids()
     for r in rows:
         tty = (r.get("terminal") or {}).get("tty")
+        short = (r.get("session_id") or "")[:8]
         r["_live"] = bool(tty and tty in live_ttys)
+        r["_window_open"] = short in open_ids
     return rows
 
 
@@ -278,6 +282,8 @@ def _help_overlay(stdscr) -> None:
         "  a         archive       /  filter",
         "  ?         this help     q/Esc quit",
         "",
+        "  Dot: ● live claude proc  ◉ window open  ○ window closed",
+        "",
         "  Press any key to close.",
     ]
     h, w = stdscr.getmaxyx()
@@ -369,7 +375,14 @@ def _tui(stdscr):
             if idx >= len(rows):
                 break
             r = rows[idx]
-            dot = "●" if r.get("_live") else "○"
+            # ● = claude process running; ◉ = window open but process not
+            # attached; ○ = window not found.
+            if r.get("_live"):
+                dot = "●"
+            elif r.get("_window_open"):
+                dot = "◉"
+            else:
+                dot = "○"
             pri = r.get("priority") or "medium"
             st = r.get("status") or "in_progress"
             sid = (r.get("session_id") or "")[:8]
