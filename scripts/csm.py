@@ -363,6 +363,48 @@ def cmd_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Immediately remove a session's registry file.
+
+    Destructive. Requires --force or an interactive y/n confirmation.
+    Does NOT touch the underlying Claude Code transcript; only the
+    csm registry record is removed. A subsequent `csm scan` will
+    re-create an auto_detected draft from the transcript unless the
+    transcript is also gone.
+    """
+    sid = _resolve_id_or_exit(args.id)
+    rec = registry.read(sid)
+    if rec is None:
+        sys.stderr.write(f"csm: no such session: {sid}\n")
+        return 1
+    if not args.force:
+        title = rec.get("title") or "(untitled)"
+        proj = rec.get("project_name") or "-"
+        sys.stderr.write(
+            f"About to delete {sid[:8]}  {title}  [{proj}]\n"
+            f"This removes the registry record only; the Claude Code transcript is preserved.\n"
+            f"Type 'y' to confirm: "
+        )
+        sys.stderr.flush()
+        try:
+            ans = sys.stdin.readline().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans != "y":
+            sys.stderr.write("csm: delete aborted\n")
+            return 2
+    path = registry.record_path(sid)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        sys.stderr.write(f"csm: delete failed: {e}\n")
+        return 1
+    sys.stdout.write(f"csm: deleted {sid}\n")
+    return 0
+
+
 def cmd_focus(args: argparse.Namespace) -> int:
     sid = _resolve_id_or_exit(args.id)
     if not platform_macos.is_macos():
@@ -468,6 +510,11 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser("archive", help="archive session")
     pa.add_argument("id")
     pa.set_defaults(func=cmd_archive)
+
+    pde = sub.add_parser("delete", help="permanently delete a session record")
+    pde.add_argument("id")
+    pde.add_argument("--force", "-f", action="store_true", help="skip y/n prompt")
+    pde.set_defaults(func=cmd_delete)
 
     psc = sub.add_parser("scan", help="scan ~/.claude/projects")
     psc.set_defaults(func=cmd_scan)
