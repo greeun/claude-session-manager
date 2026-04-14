@@ -116,18 +116,66 @@ def _merge_hooks(settings: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
     return settings, existing_total, appended_total
 
 
+STATUSLINE_COMMAND = "cst statusline"
+
+
+def _merge_statusline(settings: dict[str, Any]) -> str:
+    """Install our statusLine block iff no competing value is present.
+
+    Returns one of:
+    - ``"added"`` — statusLine was absent; we set it to our canonical shape.
+    - ``"kept_ours"`` — statusLine already points at ``cst statusline``; no-op.
+    - ``"kept_existing"`` — a different statusLine is present; we did NOT overwrite.
+    """
+    existing = settings.get("statusLine")
+    if not isinstance(existing, dict):
+        settings["statusLine"] = {
+            "type": "command",
+            "command": STATUSLINE_COMMAND,
+            "padding": 0,
+        }
+        return "added"
+    cmd = existing.get("command")
+    if isinstance(cmd, str) and cmd == STATUSLINE_COMMAND:
+        # Ensure the shape is canonical (idempotent re-install).
+        settings["statusLine"] = {
+            "type": "command",
+            "command": STATUSLINE_COMMAND,
+            "padding": 0,
+        }
+        return "kept_ours"
+    return "kept_existing"
+
+
 def merge_settings() -> int:
     path = _settings_path()
     # Ensure parent directory exists even when we're creating from scratch.
     path.parent.mkdir(parents=True, exist_ok=True)
     settings = _load_settings(path)
-    merged, existing, appended = _merge_hooks(settings)
-    _atomic_write_json(path, merged)
+    settings, existing_h, appended_h = _merge_hooks(settings)
+    status_action = _merge_statusline(settings)
+    _atomic_write_json(path, settings)
     sys.stdout.write(
         f"cst install: merged hooks into {path} "
-        f"(found {existing} existing hook entr{'y' if existing == 1 else 'ies'}, "
-        f"appended {appended} new)\n"
+        f"(found {existing_h} existing hook entr{'y' if existing_h == 1 else 'ies'}, "
+        f"appended {appended_h} new)\n"
     )
+    if status_action == "added":
+        sys.stdout.write(
+            f"cst install: statusLine set to '{STATUSLINE_COMMAND}'\n"
+        )
+    elif status_action == "kept_ours":
+        sys.stdout.write(
+            f"cst install: statusLine already set to '{STATUSLINE_COMMAND}'; no change\n"
+        )
+    elif status_action == "kept_existing":
+        sys.stdout.write(
+            "cst install: existing statusline detected; NOT overwriting.\n"
+            "cst install: to combine, wrap your current statusLine command so it also calls:\n"
+            f"    $(cst statusline)\n"
+            "cst install: for example, change your existing command to:\n"
+            "    sh -c 'your-existing-command; cst statusline'\n"
+        )
     return 0
 
 
