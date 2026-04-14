@@ -124,7 +124,28 @@ def _resolve_id_or_exit(prefix: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+_AUTOSCAN_INTERVAL = 30.0  # seconds
+
+
+def _maybe_autoscan() -> None:
+    """Run scanner if the last scan is stale. Silent on any failure."""
+    marker = registry.registry_dir() / ".last-scan"
+    try:
+        age = _dt.datetime.now(_dt.timezone.utc).timestamp() - marker.stat().st_mtime
+        if age < _AUTOSCAN_INTERVAL:
+            return
+    except OSError:
+        pass
+    try:
+        scanner.scan_once()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except Exception:
+        pass
+
+
 def cmd_list(args: argparse.Namespace) -> int:
+    _maybe_autoscan()
     threshold = sl_mod._stale_threshold_seconds()
     now = _dt.datetime.now(_dt.timezone.utc)
     live_set = livedot.live_ttys()
