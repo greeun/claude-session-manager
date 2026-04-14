@@ -276,6 +276,13 @@ def cmd_review_stale(args: argparse.Namespace) -> int:
     return rs_mod.run()
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    import watch as watch_mod
+    if args.pin:
+        return watch_mod.pin_in_iterm()
+    return watch_mod.run()
+
+
 def cmd_statusline(args: argparse.Namespace) -> int:
     return sl_mod.run()
 
@@ -360,6 +367,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     psl = sub.add_parser("statusline", help="emit Claude Code statusline text")
     psl.set_defaults(func=cmd_statusline)
+
+    pw = sub.add_parser("watch", help="auto-refreshing TUI over the registry")
+    pw.add_argument("--pin", action="store_true", help="open in a pinned iTerm2 window")
+    pw.set_defaults(func=cmd_watch)
 
     return p
 
