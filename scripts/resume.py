@@ -114,23 +114,66 @@ def build_applescript(record: dict, *, prefer: str | None = None) -> str:
     raise RuntimeError("no supported terminal")
 
 
+def _wezterm_resume(cwd: str, sid: str) -> int:
+    """Open a new WezTerm window running `claude --resume <sid>`."""
+    import shutil as _sh
+    if not _sh.which("wezterm"):
+        return 1
+    try:
+        r = subprocess.run(
+            [
+                "wezterm", "cli", "spawn", "--new-window",
+                "--cwd", cwd, "--", "claude", "--resume", sid,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1
+    if r.returncode != 0:
+        return 1
+    # Bring WezTerm to the front.
+    _run_osascript(["-e", 'tell application "WezTerm" to activate'])
+    return 0
+
+
 def run(record: dict) -> int:
     cwd = record.get("cwd") or ""
+    sid = record.get("session_id") or ""
     if not cwd:
         sys.stderr.write("csm: cannot resume: no cwd recorded for this session\n")
         return 1
+    try:
+        _validate_cwd(cwd)
+        _validate_session_id(sid)
+    except ValueError as e:
+        sys.stderr.write(f"csm: cannot resume: {e}\n")
+        return 1
+
+    app = (record.get("terminal") or {}).get("app")
+
+    # Prefer the terminal the session originally used so the user sees it.
+    if app == "WezTerm" and _wezterm_resume(cwd, sid) == 0:
+        return 0
+
+    # iTerm2 / Terminal.app via AppleScript.
     try:
         script = build_applescript(record)
     except ValueError as e:
         sys.stderr.write(f"csm: cannot resume: {e}\n")
         return 1
     except RuntimeError:
+        # No AppleScript target found — try WezTerm as last resort.
+        if _wezterm_resume(cwd, sid) == 0:
+            return 0
         sys.stderr.write(
-            "csm: no supported terminal for resume; install iTerm2 or Terminal.app\n"
+            "csm: no supported terminal for resume; install iTerm2, Terminal.app, or WezTerm\n"
         )
         return 4
     rc = _run_osascript(["-e", script])
     if rc != 0:
+        # AppleScript failed — try WezTerm fallback.
+        if _wezterm_resume(cwd, sid) == 0:
+            return 0
         sys.stderr.write("csm: resume failed (osascript non-zero exit)\n")
         return 5
     return 0

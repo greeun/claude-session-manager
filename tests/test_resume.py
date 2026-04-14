@@ -92,6 +92,7 @@ def test_resume_no_cwd_exits_1(capsys):
 def test_resume_no_supported_terminal_exits_4(monkeypatch, capsys):
     monkeypatch.setattr(resume_mod, "_is_iterm2_installed", lambda: False)
     monkeypatch.setattr(resume_mod, "_is_terminal_app_installed", lambda: False)
+    monkeypatch.setattr(resume_mod, "_wezterm_resume", lambda cwd, sid: 1)
     rec = _rec("/tmp/demo")
     rc = resume_mod.run(rec)
     assert rc == 4
