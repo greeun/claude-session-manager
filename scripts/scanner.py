@@ -30,6 +30,213 @@ from registry import (
     write as registry_write,
 )
 
+_TAIL_WINDOW_LINES = 50
+_TRUNC_LIMIT = 100  # Including the trailing "…" when truncated.
+_ELLIPSIS = "\u2026"
+
+# Tool categorisation for current_task_hint.
+_TOOL_BASH = {"Bash"}
+_TOOL_EDIT = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_TOOL_READ = {"Read"}
+_TOOL_SEARCH = {"Grep", "Glob"}
+
+
+def _scanner_log_path() -> Path:
+    from registry import registry_dir
+    return registry_dir() / ".scanner-errors.log"
+
+
+def _log_scanner_error(msg: str) -> None:
+    try:
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        p = _scanner_log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(f"{ts} scanner: {msg}\n")
+    except Exception:
+        pass
+
+
+def _truncate(text: str) -> str:
+    """Truncate on code-point boundaries; append single '…' when shortened.
+
+    The result is guaranteed ≤ ``_TRUNC_LIMIT`` code points.
+    """
+    if text is None:
+        return ""
+    # First line only.
+    line = text.splitlines()[0] if text else ""
+    if len(line) <= _TRUNC_LIMIT:
+        return line
+    # Reserve one char for the ellipsis.
+    return line[: _TRUNC_LIMIT - 1] + _ELLIPSIS
+
+
+def _extract_assistant_text(content: Any) -> str:
+    """Join text parts of an assistant message; skip tool_use parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if not isinstance(p, dict):
+                if isinstance(p, str):
+                    parts.append(p)
+                continue
+            if p.get("type") == "text":
+                t = p.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            # tool_use parts are intentionally skipped.
+        return "".join(parts)
+    return ""
+
+
+def _last_tool_use(content: Any) -> dict | None:
+    """Return the last ``tool_use`` part within a content array, or None."""
+    if not isinstance(content, list):
+        return None
+    tu: dict | None = None
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == "tool_use":
+            tu = p
+    return tu
+
+
+def _build_task_hint(tu: dict, cwd: str | None) -> str:
+    """Return the truncated hint string for a tool_use part, or '' to skip."""
+    name = tu.get("name")
+    if not isinstance(name, str) or not name:
+        return ""
+    inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+
+    def _path_label(fp: str) -> str:
+        if cwd and isinstance(cwd, str):
+            try:
+                if fp.startswith(cwd.rstrip("/") + "/"):
+                    rel = os.path.relpath(fp, cwd)
+                    return rel
+            except ValueError:
+                pass
+        return os.path.basename(fp)
+
+    hint: str
+    if name in _TOOL_BASH:
+        cmd = inp.get("command") if isinstance(inp, dict) else None
+        if isinstance(cmd, str) and cmd.strip():
+            hint = f"Running: {cmd.strip()}"
+        else:
+            hint = name
+    elif name in _TOOL_EDIT:
+        fp = inp.get("file_path") if isinstance(inp, dict) else None
+        if isinstance(fp, str) and fp.strip():
+            hint = f"Editing: {_path_label(fp)}"
+        else:
+            hint = name
+    elif name in _TOOL_READ:
+        fp = inp.get("file_path") if isinstance(inp, dict) else None
+        if isinstance(fp, str) and fp.strip():
+            hint = f"Reading: {_path_label(fp)}"
+        else:
+            hint = name
+    elif name in _TOOL_SEARCH:
+        pat = inp.get("pattern") if isinstance(inp, dict) else None
+        if isinstance(pat, str) and pat.strip():
+            hint = f"Searching: {pat.strip()}"
+        else:
+            hint = name
+    else:
+        # Unrecognised tool: bare name.
+        hint = name
+    return _truncate(hint)
+
+
+def _tail_jsonl(path: Path, n: int) -> list[dict]:
+    """Return the last ``n`` decodable JSON-object lines from ``path``.
+
+    Non-UTF-8 bytes are replaced (``errors='replace'``). Malformed lines
+    are silently dropped. The window contains EXACTLY the last ``n``
+    non-empty lines when the file has ≥ n of them, else all of them.
+    """
+    buf: list[dict] = []
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            s = raw.strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(obj, dict):
+                continue
+            buf.append(obj)
+            if len(buf) > n:
+                buf.pop(0)
+    return buf
+
+
+def _extract_progress(
+    jsonl_path: Path, cwd: str | None
+) -> tuple[str, str, str] | None:
+    """Return (last_user_prompt, last_assistant_summary, current_task_hint).
+
+    Returns ``None`` on any unrecoverable error; callers must then leave
+    existing progress fields unchanged and write a single warning.
+    """
+    try:
+        tail = _tail_jsonl(jsonl_path, _TAIL_WINDOW_LINES)
+    except OSError as e:
+        _log_scanner_error(
+            f"{jsonl_path.name}: read failed ({e.__class__.__name__}: {e})"
+        )
+        return None
+
+    last_user_prompt = ""
+    last_assistant_summary = ""
+    current_task_hint = ""
+
+    try:
+        # Most recent user line in the tail.
+        for row in reversed(tail):
+            if row.get("type") != "user":
+                continue
+            msg = row.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else row.get("content")
+            text = _extract_text(content) or ""
+            if text:
+                last_user_prompt = _truncate(text)
+                break
+
+        # Most recent assistant line in the tail — for the summary only
+        # join text parts, skip tool_use parts.
+        for row in reversed(tail):
+            if row.get("type") != "assistant":
+                continue
+            msg = row.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else row.get("content")
+            text = _extract_assistant_text(content).strip()
+            if text:
+                last_assistant_summary = _truncate(text)
+                break
+
+        # Most recent tool_use part anywhere in the tail.
+        for row in reversed(tail):
+            msg = row.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else row.get("content")
+            tu = _last_tool_use(content)
+            if tu is not None:
+                current_task_hint = _build_task_hint(tu, cwd)
+                break
+    except Exception as e:
+        _log_scanner_error(
+            f"{jsonl_path.name}: progress extraction failed "
+            f"({e.__class__.__name__}: {e})"
+        )
+        return None
+
+    return last_user_prompt, last_assistant_summary, current_task_hint
+
 
 def projects_dir() -> Path:
     override = os.environ.get("CST_PROJECTS_DIR")
@@ -99,7 +306,7 @@ def _seed_from_jsonl(path: Path) -> tuple[str | None, str | None]:
     title_seed: str | None = None
     cwd_seed: str | None = None
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 raw = raw.strip()
                 if not raw:
@@ -173,6 +380,13 @@ def scan_once() -> dict[str, int]:
                 rec["project_name"] = project_name
                 rec["last_activity_at"] = mtime
                 rec["title"] = title_seed or (project_name or "")
+                # Fresh record has no prior progress; extract and store.
+                prog = _extract_progress(jf, cwd_seed)
+                if prog is not None:
+                    lup, las, cth = prog
+                    rec["last_user_prompt"] = lup
+                    rec["last_assistant_summary"] = las
+                    rec["current_task_hint"] = cth
                 registry_write(rec)
                 created += 1
                 continue
@@ -196,6 +410,35 @@ def scan_once() -> dict[str, int]:
             if (existing.get("cwd") in (None, "")) and cwd_seed:
                 existing["cwd"] = cwd_seed
                 changed = True
+
+            # Progress extraction. Apply "fresher wins" rule per §2.2
+            # option (b): scanner only overwrites ``last_user_prompt``
+            # when the JSONL mtime is strictly newer than the record's
+            # ``last_activity_at`` AND the extracted value is non-empty
+            # AND differs from the stored value. The other two fields
+            # (assistant summary, task hint) are scanner-only and
+            # always refreshed when non-empty.
+            prog = _extract_progress(jf, existing.get("cwd") or cwd_seed)
+            if prog is not None:
+                lup_new, las_new, cth_new = prog
+                stored_last_act = existing.get("last_activity_at") or ""
+                jsonl_newer = mtime > stored_last_act
+                cur_lup = existing.get("last_user_prompt", "")
+                if (
+                    lup_new
+                    and lup_new != cur_lup
+                    and jsonl_newer
+                ):
+                    existing["last_user_prompt"] = lup_new
+                    changed = True
+                # Assistant summary + task hint are scanner-only; refresh
+                # whenever the extracted value differs from stored.
+                if existing.get("last_assistant_summary", "") != las_new:
+                    existing["last_assistant_summary"] = las_new
+                    changed = True
+                if existing.get("current_task_hint", "") != cth_new:
+                    existing["current_task_hint"] = cth_new
+                    changed = True
 
             # Always refresh last_activity_at to reflect file mtime, but
             # only if newer than the stored value (so that more recent
