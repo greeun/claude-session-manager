@@ -127,66 +127,42 @@ def build_applescript(record: dict) -> str | None:
 
 
 def _kitty_focus(record: dict) -> int:
-    """Focus a kitty window via `kitty @ focus-window --match id:N`.
-
-    Requires `allow_remote_control yes` in kitty.conf (or per-session
-    via `kitty --listen-on`). Falls back to title matching on failure.
-    """
+    """Try kitty's IPC; return 0 on success, non-zero on failure.
+    Silent — run() owns the final error message."""
     import shutil as _sh
-    sid = record.get("session_id", "")
-    short = sid[:8]
     term = record.get("terminal") or {}
     window_id = term.get("window_id")
-    listen_on = term.get("kitty_listen_on")
-    if not _sh.which("kitty"):
-        return _title_match_focus(record) or _unsupported_exit("kitty (kitty CLI not found)", short)
-    if not window_id:
-        return _title_match_focus(record) or _unsupported_exit("kitty (no window id captured — restart the session)", short)
+    if not _sh.which("kitty") or not window_id:
+        return 1
     cmd = ["kitty", "@"]
+    listen_on = term.get("kitty_listen_on")
     if listen_on:
         cmd += ["--to", listen_on]
     cmd += ["focus-window", "--match", f"id:{window_id}"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except (subprocess.SubprocessError, OSError):
-        return _title_match_focus(record) or _failure_exit("kitty", short)
-    if r.returncode != 0:
-        return _title_match_focus(record) or _failure_exit("kitty", short)
-    return 0
+        return 1
+    return 0 if r.returncode == 0 else 1
 
 
 def _tmux_focus(record: dict) -> int:
-    """Switch the current tmux client to the pane that owns this session.
-
-    tmux focus is only meaningful when there's a tmux server running;
-    the pane must still exist. Also tries to `osascript` bring the
-    outer terminal to the front on macOS.
-    """
+    """Try tmux IPC; return 0 on success, non-zero otherwise. Silent."""
     import shutil as _sh
-    sid = record.get("session_id", "")
-    short = sid[:8]
     term = record.get("terminal") or {}
     pane = term.get("tmux_pane")
     socket = term.get("tmux_socket")
     if not _sh.which("tmux") or not pane:
-        return _title_match_focus(record) or _unsupported_exit("tmux (tmux not available or pane not captured)", short)
+        return 1
     base = ["tmux"]
     if socket:
         base += ["-S", socket]
     try:
-        subprocess.run(
-            base + ["select-pane", "-t", pane], capture_output=True, text=True, timeout=5,
-        )
-        subprocess.run(
-            base + ["select-window", "-t", pane], capture_output=True, text=True, timeout=5,
-        )
-        r = subprocess.run(
-            base + ["switch-client", "-t", pane], capture_output=True, text=True, timeout=5,
-        )
+        subprocess.run(base + ["select-pane", "-t", pane], capture_output=True, text=True, timeout=5)
+        subprocess.run(base + ["select-window", "-t", pane], capture_output=True, text=True, timeout=5)
+        subprocess.run(base + ["switch-client", "-t", pane], capture_output=True, text=True, timeout=5)
     except (subprocess.SubprocessError, OSError):
-        return _title_match_focus(record) or _failure_exit("tmux", short)
-    # switch-client rc!=0 is common when no client is attached — not fatal.
-    # Try to bring the outer terminal app forward, best-effort.
+        return 1
     outer = term.get("app")
     if sys.platform == "darwin" and outer:
         _run_osascript(["-e", f'tell application "{outer}" to activate'])
@@ -272,25 +248,24 @@ def _title_match_focus(record: dict) -> int | None:
 
 
 def _wezterm_focus(record: dict) -> int:
-    """Focus a WezTerm pane by pane_id stored in ``terminal.window_id``."""
+    """Try WezTerm IPC; return 0 on success, non-zero on failure. Silent."""
     import shutil as _sh
-    sid = record.get("session_id", "")
-    short = sid[:8]
     term = record.get("terminal") or {}
     pane_id = term.get("window_id")
-    if not pane_id:
-        return _unsupported_exit("WezTerm (no pane_id captured — restart the session after installing)", short)
-    if not _sh.which("wezterm"):
-        return _unsupported_exit("WezTerm (wezterm CLI not found on PATH)", short)
+    if not pane_id or not _sh.which("wezterm"):
+        return 1
     try:
         r = subprocess.run(
             ["wezterm", "cli", "activate-pane", "--pane-id", str(pane_id)],
             capture_output=True, text=True, timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
-        return _failure_exit("WezTerm", short)
+        return 1
     if r.returncode != 0:
-        return _failure_exit("WezTerm", short)
+        return 1
+    # Also bring the WezTerm app to the front on macOS.
+    if sys.platform == "darwin":
+        _run_osascript(["-e", 'tell application "WezTerm" to activate'])
     return 0
 
 
@@ -342,7 +317,14 @@ def run(record: dict) -> int:
     if rc == 0:
         return 0
 
-    # (4) Supported-but-broken vs genuinely unsupported.
+    # (4) Give up with a single, informative message.
+    has_marker = bool(term.get("window_id") or term.get("tmux_pane"))
+    if not has_marker and app in (WEZTERM_APPS | KITTY_APPS) or app is None:
+        sys.stderr.write(
+            f"cst: focus unavailable — this session predates window-tracking. "
+            f"Try: csm resume {short}\n"
+        )
+        return 4
     if app in ITERM_APPS | TERMINAL_APPS | WEZTERM_APPS | KITTY_APPS:
         return _failure_exit(app_display, short)
     return _unsupported_exit(app_display, short)
