@@ -38,6 +38,7 @@ TERMINAL_FOCUS_ACTIVATE_ONLY = 'tell application "Terminal" to activate'
 
 ITERM_APPS = {"iTerm.app", "iTerm2"}
 TERMINAL_APPS = {"Apple_Terminal", "Terminal"}
+WEZTERM_APPS = {"WezTerm"}
 
 
 def _run_osascript(args: list[str]) -> int:
@@ -124,12 +125,37 @@ def build_applescript(record: dict) -> str | None:
     return None
 
 
+def _wezterm_focus(record: dict) -> int:
+    """Focus a WezTerm pane by pane_id stored in ``terminal.window_id``."""
+    import shutil as _sh
+    sid = record.get("session_id", "")
+    short = sid[:8]
+    term = record.get("terminal") or {}
+    pane_id = term.get("window_id")
+    if not pane_id:
+        return _unsupported_exit("WezTerm (no pane_id captured — restart the session after installing)", short)
+    if not _sh.which("wezterm"):
+        return _unsupported_exit("WezTerm (wezterm CLI not found on PATH)", short)
+    try:
+        r = subprocess.run(
+            ["wezterm", "cli", "activate-pane", "--pane-id", str(pane_id)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return _failure_exit("WezTerm", short)
+    if r.returncode != 0:
+        return _failure_exit("WezTerm", short)
+    return 0
+
+
 def run(record: dict) -> int:
     """Execute focus for ``record``. Returns the exit code."""
     sid = record.get("session_id", "")
     short = sid[:8]
     app = (record.get("terminal") or {}).get("app")
     app_display = app if app else "unknown"
+    if app in WEZTERM_APPS:
+        return _wezterm_focus(record)
     try:
         script = build_applescript(record)
     except ValueError:
