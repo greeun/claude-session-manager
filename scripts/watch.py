@@ -347,9 +347,10 @@ def _tui(stdscr):
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
+        import csm as _csm
         filt_hint = f"  filter: {filt!r}" if filt else ""
         header = (
-            f" csm watch  {len(rows)}/{len(all_rows)}{filt_hint}   "
+            f" csm v{_csm.__version__}  {len(rows)}/{len(all_rows)}{filt_hint}   "
             "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  /=filter  ?=help  q=quit "
         )
         _safe_addnstr(stdscr, 0, 0, header.ljust(w), w, curses.color_pair(2) | curses.A_BOLD)

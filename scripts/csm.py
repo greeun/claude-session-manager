@@ -35,7 +35,7 @@ import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
 import platform_macos  # noqa: E402
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 
@@ -302,6 +302,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         sys.stdout.write(
             f"\u26a0 {stale_count} stale sessions — run 'csm review-stale'\n"
         )
+    if not args.json and sys.stdout.isatty():
+        sys.stdout.write(f"\n\033[2mcsm v{__version__}\033[0m\n")
     return 0
 
 
