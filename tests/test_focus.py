@@ -111,7 +111,8 @@ def test_focus_null_app_treated_as_unsupported(cap, capsys):
     rc = focus_mod.run(rec)
     assert rc == 4
     err = capsys.readouterr().err
-    assert "'unknown'" in err
+    # Null-app legacy records now get a more specific hint.
+    assert "csm resume" in err
 
 
 def test_focus_osascript_failure_exits_5_with_resume_hint(monkeypatch, capsys):
