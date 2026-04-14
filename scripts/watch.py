@@ -106,8 +106,13 @@ def _safe_addnstr(stdscr, y, x, s, n, attr=0):
         pass
 
 
+def _cell_width(s: str) -> int:
+    from unicodedata import east_asian_width
+    return sum(2 if east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
 def _truncate(s: str, width: int) -> str:
-    """Truncate to fit within `width` cells (approx; treats wide chars as 2)."""
+    """Truncate to fit within `width` cells (treats wide chars as 2)."""
     if width <= 0:
         return ""
     from unicodedata import east_asian_width
@@ -115,12 +120,20 @@ def _truncate(s: str, width: int) -> str:
     used = 0
     for ch in s:
         w = 2 if east_asian_width(ch) in ("W", "F") else 1
-        if used + w > width - 1:
+        if used + w > width - 1 and _cell_width(s) > width:
             out.append("…")
             return "".join(out)
+        if used + w > width:
+            break
         out.append(ch)
         used += w
     return "".join(out)
+
+
+def _pad(s: str, width: int) -> str:
+    """Left-align s to exactly `width` cells (truncate + pad with spaces)."""
+    t = _truncate(s, width)
+    return t + " " * max(0, width - _cell_width(t))
 
 
 def _run_subcommand(stdscr, cmd: list[str]) -> None:
@@ -297,8 +310,8 @@ def _tui(stdscr):
             base = curses.color_pair(1) | curses.A_BOLD if is_sel else 0
             # Render row
             line = (
-                f"{dot} {sid:<8}  {pri:<6} {st:<12} "
-                f"{_truncate(title, 44):<44}  {proj:<18}  {rel}"
+                f"{dot} {_pad(sid, 8)}  {_pad(pri, 6)} {_pad(st, 12)} "
+                f"{_pad(title, 44)}  {_pad(proj, 18)}  {_pad(rel, 8)}"
             )
             _safe_addnstr(stdscr, y, 0, line.ljust(w - 1), w - 1, base)
             y += 1
