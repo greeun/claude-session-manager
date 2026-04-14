@@ -136,6 +136,64 @@ def _pad(s: str, width: int) -> str:
     return t + " " * max(0, width - _cell_width(t))
 
 
+def _fit_right(s: str, width: int) -> str:
+    """Fit s into `width` cells by keeping the RIGHT side; prefix `…` if trimmed."""
+    if width <= 0:
+        return ""
+    if _cell_width(s) <= width:
+        return s + " " * (width - _cell_width(s))
+    # Walk from the right, accumulating chars whose total cell width ≤ width-1.
+    from unicodedata import east_asian_width
+    chars: list[str] = []
+    used = 0
+    for ch in reversed(s):
+        w = 2 if east_asian_width(ch) in ("W", "F") else 1
+        if used + w > width - 1:
+            break
+        chars.append(ch)
+        used += w
+    result = "…" + "".join(reversed(chars))
+    pad = width - _cell_width(result)
+    return result + " " * max(0, pad)
+
+
+def _marquee(s: str, width: int, offset: int) -> str:
+    """Carousel-style scrolling window of s in a field of `width` cells.
+
+    Appends a 3-space gap so the text loops with breathing room.
+    `offset` is incremented by the caller each tick.
+    """
+    if width <= 0:
+        return ""
+    if _cell_width(s) <= width:
+        return _pad(s, width)
+    scroll = s + "   "
+    from unicodedata import east_asian_width
+    # Build a list of (char, cell_width).
+    cells = [(c, 2 if east_asian_width(c) in ("W", "F") else 1) for c in scroll]
+    total = sum(w for _, w in cells)
+    off = offset % total
+    # Skip chars until we've skipped `off` cells (may leave a partial wide char).
+    skipped = 0
+    i = 0
+    while i < len(cells) and skipped < off:
+        skipped += cells[i][1]
+        i += 1
+    # Concatenate chars cyclically up to `width` cells.
+    out: list[str] = []
+    used = 0
+    j = i
+    n = len(cells)
+    while used < width:
+        ch, cw = cells[j % n]
+        if used + cw > width:
+            break
+        out.append(ch)
+        used += cw
+        j += 1
+    return "".join(out) + " " * max(0, width - used)
+
+
 def _run_subcommand(stdscr, cmd: list[str]) -> None:
     """Run a cst subcommand outside curses so it can print to terminal."""
     import curses
@@ -251,7 +309,9 @@ def _tui(stdscr):
     except curses.error:
         pass
     stdscr.keypad(True)
-    stdscr.timeout(int(REFRESH_SECONDS * 1000))
+    # Short tick (200ms) so the focused row's path marquee scrolls smoothly;
+    # data refresh still only runs every REFRESH_SECONDS.
+    stdscr.timeout(200)
 
     sel = 0
     top = 0
@@ -260,6 +320,9 @@ def _tui(stdscr):
     all_rows: list[dict] = []
     rows: list[dict] = []
     force_refresh = True
+    marquee_tick = 0
+    last_sel = -1
+    PROJECT_COL = 36
 
     while True:
         now = time.monotonic()
@@ -281,7 +344,10 @@ def _tui(stdscr):
         )
         _safe_addnstr(stdscr, 0, 0, header.ljust(w), w, curses.color_pair(2) | curses.A_BOLD)
 
-        col_hdr = f"  {'ID':<8}  {'PRI':<6} {'STATUS':<12} {'TITLE':<44}  {'PROJECT':<18}  WHEN"
+        col_hdr = (
+            f"  {'ID':<8}  {'PRI':<6} {'STATUS':<12} {'TITLE':<44}  "
+            f"{_pad('PROJECT (path)', PROJECT_COL)}  WHEN"
+        )
         _safe_addnstr(stdscr, 1, 0, col_hdr, w - 1, curses.A_DIM | curses.A_UNDERLINE)
 
         list_top = 2
@@ -304,14 +370,22 @@ def _tui(stdscr):
             st = r.get("status") or "in_progress"
             sid = (r.get("session_id") or "")[:8]
             title = (r.get("title") or "").replace("\n", " ")
-            proj = (r.get("project_name") or "-")[:18]
+            cwd_path = (r.get("cwd") or r.get("project_name") or "-").replace("\n", " ")
+            home = os.path.expanduser("~")
+            if cwd_path.startswith(home + "/"):
+                cwd_path = "~" + cwd_path[len(home):]
             rel = _relative_time(r.get("last_activity_at"))
             is_sel = idx == sel
             base = curses.color_pair(1) | curses.A_BOLD if is_sel else 0
-            # Render row
+            # Focused row: marquee-scroll the path. Others: right-fit (last
+            # portion visible with leading ellipsis).
+            if is_sel:
+                proj_str = _marquee(cwd_path, PROJECT_COL, marquee_tick)
+            else:
+                proj_str = _fit_right(cwd_path, PROJECT_COL)
             line = (
                 f"{dot} {_pad(sid, 8)}  {_pad(pri, 6)} {_pad(st, 12)} "
-                f"{_pad(title, 44)}  {_pad(proj, 18)}  {_pad(rel, 8)}"
+                f"{_pad(title, 44)}  {proj_str}  {_pad(rel, 8)}"
             )
             _safe_addnstr(stdscr, y, 0, line.ljust(w - 1), w - 1, base)
             y += 1
@@ -335,6 +409,14 @@ def _tui(stdscr):
             _safe_addnstr(stdscr, footer_y, 0, _truncate(text, w - 1), w - 1, curses.A_DIM)
 
         stdscr.refresh()
+
+        # Marquee tick: reset when selection changes so the focused path
+        # always starts from the beginning; advance otherwise.
+        if sel != last_sel:
+            marquee_tick = 0
+            last_sel = sel
+        else:
+            marquee_tick += 1
 
         try:
             k = stdscr.get_wch()
