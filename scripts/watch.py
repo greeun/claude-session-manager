@@ -270,6 +270,19 @@ def _apply_filter(rows: list[dict], q: str) -> list[dict]:
     return out
 
 
+def _confirm_delete(stdscr, sid: str) -> bool:
+    """Prompt y/n and unlink the registry record. Returns True on delete."""
+    import registry as _registry
+    confirm = _prompt(stdscr, f"delete {sid[:8]}? type 'y'")
+    if not confirm or confirm.strip().lower() != "y":
+        return False
+    try:
+        _registry.record_path(sid).unlink()
+    except OSError:
+        pass
+    return True
+
+
 def _help_overlay(stdscr) -> None:
     import curses
     lines = [
@@ -281,7 +294,7 @@ def _help_overlay(stdscr) -> None:
         "  r         resume in a new terminal",
         "  n         edit note     p  cycle priority",
         "  s         cycle status  d  mark done",
-        "  a         archive       x  DELETE (confirm)",
+        "  a         archive       x/Del  DELETE (confirm)",
         "  /         filter",
         "  ?         this help     q/Esc quit",
         "",
@@ -505,13 +518,7 @@ def _tui(stdscr):
                 )
                 force_refresh = True
             elif rows and k in ("x", "X"):
-                sel_sid = rows[sel]["session_id"]
-                confirm = _prompt(stdscr, f"delete {sel_sid[:8]}? type 'y'")
-                if confirm and confirm.strip().lower() == "y":
-                    try:
-                        _registry.record_path(sel_sid).unlink()
-                    except OSError:
-                        pass
+                if _confirm_delete(stdscr, rows[sel]["session_id"]):
                     if sel > 0:
                         sel -= 1
                     force_refresh = True
@@ -528,6 +535,11 @@ def _tui(stdscr):
                 sel = 0
             elif k == curses.KEY_END and rows:
                 sel = len(rows) - 1
+            elif k == curses.KEY_DC and rows:
+                if _confirm_delete(stdscr, rows[sel]["session_id"]):
+                    if sel > 0:
+                        sel -= 1
+                    force_refresh = True
 
 
 def run(refresh_interval: float = REFRESH_SECONDS) -> int:
