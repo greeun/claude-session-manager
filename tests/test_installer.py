@@ -83,8 +83,39 @@ def test_install_preserves_existing_statusline(tmp_path):
     assert r.returncode == 0, r.stderr + r.stdout
     s = json.loads((home / ".claude/settings.json").read_text())
     assert s["statusLine"]["command"] == "echo MY_EXISTING"
+    # Warning emitted on stdout mentioning the existing statusline.
+    assert "existing statusline" in (r.stdout + r.stderr).lower()
     # And hooks still got merged.
     assert "cst hook session-start" in _hook_commands(s, "SessionStart")
+
+
+def test_install_sets_fresh_statusline(tmp_path):
+    """When no statusLine exists, installer sets the full canonical shape."""
+    home = tmp_path / "install_home"
+    home.mkdir()
+    r = _run_install(home)
+    assert r.returncode == 0, r.stderr + r.stdout
+    s = json.loads((home / ".claude/settings.json").read_text())
+    sl = s["statusLine"]
+    assert isinstance(sl, dict)
+    assert set(sl.keys()) == {"type", "command", "padding"}
+    assert sl["type"] == "command"
+    assert sl["command"] == "cst statusline"
+    assert sl["padding"] == 0
+
+
+def test_install_idempotent_statusline(tmp_path):
+    """Re-running the installer leaves a prior cst statusline untouched."""
+    home = tmp_path / "install_home"
+    home.mkdir()
+    _run_install(home)
+    _run_install(home)
+    s = json.loads((home / ".claude/settings.json").read_text())
+    sl = s["statusLine"]
+    assert set(sl.keys()) == {"type", "command", "padding"}
+    assert sl["type"] == "command"
+    assert sl["command"] == "cst statusline"
+    assert sl["padding"] == 0
 
 
 def test_install_refuses_malformed_settings_json(tmp_path):
