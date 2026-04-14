@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-import cst_gc as gc
+import csm_gc as gc
 import registry
 
 
@@ -39,7 +39,7 @@ def test_gc_deletes_only_old_archived(capsys):
     assert registry.record_path(SID_LIVE).exists()
     out = capsys.readouterr().out.strip()
     assert out == (
-        "cst gc: deleted 1 record(s); kept 1 archived record(s) "
+        "csm gc: deleted 1 record(s); kept 1 archived record(s) "
         "still within the 7-day window"
     )
 

@@ -1,4 +1,4 @@
-"""``cst gc`` — delete records archived ≥ 7 days ago.
+"""``csm gc`` — delete records archived ≥ 7 days ago.
 
 Per sprint_contract.md §2.12. Never touches non-archived records.
 Uses stored ``archived_at`` timestamp, not file mtime.
@@ -69,7 +69,7 @@ def run() -> int:
                 deleted += 1
             except OSError as e:
                 sys.stderr.write(
-                    f"cst gc: failed to delete {path.name}: "
+                    f"csm gc: failed to delete {path.name}: "
                     f"{e.__class__.__name__}: {e}\n"
                 )
                 errors += 1
@@ -77,7 +77,7 @@ def run() -> int:
             kept_archived += 1
 
     sys.stdout.write(
-        f"cst gc: deleted {deleted} record(s); "
+        f"csm gc: deleted {deleted} record(s); "
         f"kept {kept_archived} archived record(s) still within the 7-day window\n"
     )
     return 1 if errors else 0

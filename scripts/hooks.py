@@ -133,7 +133,7 @@ def _stamp_window_title(short_id: str) -> None:
     /dev/tty (the user's actual terminal). Silent on any failure —
     hooks must never block the session.
     """
-    title = f"cst:{short_id}"
+    title = f"csm:{short_id}"
     esc = f"\x1b]0;{title}\x07"
     try:
         with open("/dev/tty", "w") as fh:
@@ -144,7 +144,7 @@ def _stamp_window_title(short_id: str) -> None:
 
 
 def session_start() -> int:
-    """Entry: ``cst hook session-start``. Always returns 0."""
+    """Entry: ``csm hook session-start``. Always returns 0."""
     try:
         payload = _read_stdin_payload()
         sid = _resolve_session_id(payload)
@@ -198,7 +198,7 @@ def _resolve_prompt(payload: dict[str, Any]) -> str:
 
 
 def activity() -> int:
-    """Entry: ``cst hook activity``. Always returns 0.
+    """Entry: ``csm hook activity``. Always returns 0.
 
     Binding behaviors:
     - Stdin-first payload parsing with env-var fallback (Sprint 1).

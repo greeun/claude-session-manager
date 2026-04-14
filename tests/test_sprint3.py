@@ -20,6 +20,7 @@ EXPECTED_COMMANDS = {
     "task-status.md",
     "task-done.md",
     "task-focus.md",
+    "done.md",
 }
 
 
@@ -40,7 +41,7 @@ def test_slash_command_has_frontmatter_and_description(name):
 @pytest.mark.parametrize("name", sorted(EXPECTED_COMMANDS))
 def test_slash_command_invokes_cst(name):
     text = (COMMANDS_DIR / name).read_text()
-    assert "cst" in text, f"{name}: body does not reference cst"
+    assert "csm" in text, f"{name}: body does not reference cst"
 
 
 # --- watch TUI render ------------------------------------------------------ #

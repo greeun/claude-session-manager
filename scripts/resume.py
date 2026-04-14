@@ -1,4 +1,4 @@
-"""``cst resume <id>`` — spawn a new terminal window that runs
+"""``csm resume <id>`` — spawn a new terminal window that runs
 ``cd <cwd> && claude --resume <session_id>``.
 
 Per sprint_contract.md §2.8. Two escape layers apply — see §2.8 for
@@ -117,20 +117,20 @@ def build_applescript(record: dict, *, prefer: str | None = None) -> str:
 def run(record: dict) -> int:
     cwd = record.get("cwd") or ""
     if not cwd:
-        sys.stderr.write("cst: cannot resume: no cwd recorded for this session\n")
+        sys.stderr.write("csm: cannot resume: no cwd recorded for this session\n")
         return 1
     try:
         script = build_applescript(record)
     except ValueError as e:
-        sys.stderr.write(f"cst: cannot resume: {e}\n")
+        sys.stderr.write(f"csm: cannot resume: {e}\n")
         return 1
     except RuntimeError:
         sys.stderr.write(
-            "cst: no supported terminal for resume; install iTerm2 or Terminal.app\n"
+            "csm: no supported terminal for resume; install iTerm2 or Terminal.app\n"
         )
         return 4
     rc = _run_osascript(["-e", script])
     if rc != 0:
-        sys.stderr.write("cst: resume failed (osascript non-zero exit)\n")
+        sys.stderr.write("csm: resume failed (osascript non-zero exit)\n")
         return 5
     return 0

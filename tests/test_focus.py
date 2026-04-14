@@ -102,7 +102,7 @@ def test_focus_unsupported_app_exits_4_with_resume_hint(cap, capsys):
     assert cap.args == []  # no osascript attempted
     err = capsys.readouterr().err
     assert "unsupported" in err
-    assert "cst resume" in err
+    assert "csm resume" in err
     assert SID[:8] in err
 
 
@@ -121,7 +121,7 @@ def test_focus_osascript_failure_exits_5_with_resume_hint(monkeypatch, capsys):
     assert rc == 5
     err = capsys.readouterr().err
     assert "failed" in err
-    assert "cst resume" in err
+    assert "csm resume" in err
 
 
 def test_focus_window_id_is_integer_only(cap, capsys):

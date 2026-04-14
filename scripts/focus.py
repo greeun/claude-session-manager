@@ -1,4 +1,4 @@
-"""``cst focus <id>`` — bring a session's terminal window to the front.
+"""``csm focus <id>`` — bring a session's terminal window to the front.
 
 Templates per sprint_contract.md §2.8 are literal and byte-asserted by
 tests. ``_run_osascript`` is monkeypatched by tests — no real
@@ -76,24 +76,24 @@ def _as_int(value, field_name: str) -> int:
 
 def _unsupported_exit(app_display: str, short_id: str) -> int:
     sys.stderr.write(
-        f"cst: focus unsupported for terminal '{app_display}'. "
-        f"Try: cst resume {short_id}\n"
+        f"csm: focus unsupported for terminal '{app_display}'. "
+        f"Try: csm resume {short_id}\n"
     )
     return 4
 
 
 def _failure_exit(app: str, short_id: str) -> int:
     sys.stderr.write(
-        f"cst: focus failed ({app} window may be closed). "
-        f"Try: cst resume {short_id}\n"
+        f"csm: focus failed ({app} window may be closed). "
+        f"Try: csm resume {short_id}\n"
     )
     return 5
 
 
 def _corrupt_window_id_exit(short_id: str) -> int:
     sys.stderr.write(
-        f"cst: focus failed (corrupt window_id in record). "
-        f"Try: cst resume {short_id}\n"
+        f"csm: focus failed (corrupt window_id in record). "
+        f"Try: csm resume {short_id}\n"
     )
     return 5
 
@@ -194,7 +194,7 @@ def _tmux_focus(record: dict) -> int:
 
 
 def _title_match_focus(record: dict) -> int | None:
-    """Universal fallback: match the window whose title contains cst:<short>.
+    """Universal fallback: match the window whose title contains csm:<short>.
 
     Relies on the SessionStart hook having stamped the terminal title
     via OSC-0 (``hooks._stamp_window_title``). Returns 0 on success,
@@ -204,10 +204,10 @@ def _title_match_focus(record: dict) -> int | None:
     import shutil as _sh
     sid = record.get("session_id", "")
     short = sid[:8]
-    marker = f"cst:{short}"
+    marker = f"csm:{short}"
     if sys.platform == "darwin":
         # AppleScript iterates every process's windows; matching by
-        # `name contains "cst:..."` is O(n windows) but cheap.
+        # `name contains "csm:..."` is O(n windows) but cheap.
         script = (
             'tell application "System Events"\n'
             '  repeat with p in (every application process whose visible is true)\n'
@@ -302,9 +302,9 @@ def run(record: dict) -> int:
       2. Then try the terminal app's native IPC (WezTerm / kitty /
          iTerm2 / Terminal.app).
       3. Universal fallback: title-match the window stamped with
-         ``cst:<short-id>`` by the SessionStart hook (works on macOS
+         ``csm:<short-id>`` by the SessionStart hook (works on macOS
          System Events, X11 wmctrl/xdotool, Wayland sway).
-      4. Give up: tell the user to try ``cst resume``.
+      4. Give up: tell the user to try ``csm resume``.
     """
     sid = record.get("session_id", "")
     short = sid[:8]

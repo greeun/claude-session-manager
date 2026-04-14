@@ -1,4 +1,4 @@
-"""``cst review-stale`` — interactive keep/done/archive/skip wizard.
+"""``csm review-stale`` — interactive keep/done/archive/skip wizard.
 
 Per sprint_contract.md §2.6. keep/skip are byte-identical no-ops.
 done/archive mutate. Non-interactive mode treats remaining as skip.
@@ -98,7 +98,7 @@ def run(*, inp=None, out=None) -> int:
     out = out or sys.stdout
     stale = _stale_records()
     if not stale:
-        out.write("cst review-stale: no stale sessions.\n")
+        out.write("csm review-stale: no stale sessions.\n")
         return 0
     total = len(stale)
     for i, rec in enumerate(stale, start=1):

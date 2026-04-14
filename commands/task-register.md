@@ -1,6 +1,6 @@
 ---
 description: Register the current Claude Code session with a title and optional priority
-allowed-tools: Bash(cst:*)
+allowed-tools: Bash(csm:*)
 argument-hint: "<title> [high|medium|low]"
 ---
 
@@ -12,6 +12,6 @@ Parse $ARGUMENTS: treat the final token as priority if it is one of `high`, `med
 
 Then run:
 
-!`cst set "$CLAUDE_SESSION_ID" --title "<title>" --priority "<priority|medium>"`
+!`csm set "$CLAUDE_SESSION_ID" --title "<title>" --priority "<priority|medium>"`
 
-Report the resulting row from `cst list` for that session.
+Report the resulting row from `csm list` for that session.
