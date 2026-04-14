@@ -149,7 +149,15 @@ def run(record: dict) -> int:
         sys.stderr.write(f"csm: cannot resume: {e}\n")
         return 1
 
+    import os as _os
     app = (record.get("terminal") or {}).get("app")
+    # If the record has no recorded terminal, fall back to whichever the
+    # user is currently in. This matters for legacy sessions recorded
+    # before we captured `terminal.app`.
+    if app is None:
+        app = _os.environ.get("TERM_PROGRAM") or None
+        if app is None and _os.environ.get("WEZTERM_PANE"):
+            app = "WezTerm"
 
     # Prefer the terminal the session originally used so the user sees it.
     if app == "WezTerm" and _wezterm_resume(cwd, sid) == 0:

@@ -321,7 +321,7 @@ def run(record: dict) -> int:
     has_marker = bool(term.get("window_id") or term.get("tmux_pane"))
     if not has_marker and app in (WEZTERM_APPS | KITTY_APPS) or app is None:
         sys.stderr.write(
-            f"cst: focus unavailable — this session predates window-tracking. "
+            f"csm: focus unavailable — this session predates window-tracking. "
             f"Try: csm resume {short}\n"
         )
         return 4
