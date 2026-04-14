@@ -99,21 +99,48 @@ def _terminal_capture() -> dict[str, Any]:
     except OSError:
         pass
     window_id: str | None = None
-    # WezTerm sets WEZTERM_PANE in every shell it spawns. Capture it so
-    # `cst focus` can call `wezterm cli activate-pane --pane-id <id>`.
-    wez_pane = os.environ.get("WEZTERM_PANE")
-    if wez_pane:
-        if term_app is None:
-            term_app = "WezTerm"
-        window_id = wez_pane
-    # iTerm2 sets ITERM_SESSION_ID like "w0t0p0:UUID"; the window id is
-    # accessible via AppleScript on focus. Nothing to capture here.
+    extra: dict[str, Any] = {}
+    # WezTerm.
+    if os.environ.get("WEZTERM_PANE"):
+        term_app = term_app or "WezTerm"
+        window_id = os.environ["WEZTERM_PANE"]
+    # Kitty.
+    elif os.environ.get("KITTY_WINDOW_ID"):
+        term_app = term_app or "kitty"
+        window_id = os.environ["KITTY_WINDOW_ID"]
+        sock = os.environ.get("KITTY_LISTEN_ON")
+        if sock:
+            extra["kitty_listen_on"] = sock
+    # tmux — a multiplexer that may be inside any outer terminal.
+    if os.environ.get("TMUX_PANE"):
+        extra["tmux_pane"] = os.environ["TMUX_PANE"]
+        tmux_env = os.environ.get("TMUX") or ""
+        if tmux_env:
+            extra["tmux_socket"] = tmux_env.split(",", 1)[0]
     return {
         "app": term_app,
         "window_id": window_id,
         "tab_id": None,
         "tty": tty,
+        **extra,
     }
+
+
+def _stamp_window_title(short_id: str) -> None:
+    """Write an OSC-0 title escape directly to the controlling TTY.
+
+    The hook's stdout is captured by Claude Code, so we must write to
+    /dev/tty (the user's actual terminal). Silent on any failure —
+    hooks must never block the session.
+    """
+    title = f"cst:{short_id}"
+    esc = f"\x1b]0;{title}\x07"
+    try:
+        with open("/dev/tty", "w") as fh:
+            fh.write(esc)
+            fh.flush()
+    except OSError:
+        pass
 
 
 def session_start() -> int:
@@ -134,6 +161,7 @@ def session_start() -> int:
             project_name=project_name,
             terminal=_terminal_capture(),
         )
+        _stamp_window_title(sid[:8])
         return 0
     except Exception as e:
         log_error(
