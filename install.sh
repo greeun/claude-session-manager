@@ -22,13 +22,21 @@ CST_BIN="${BIN_DIR}/cst"
 SKILL_LINK="${SKILLS_DIR}/claude-session-manager"
 SETTINGS="${CLAUDE_DIR}/settings.json"
 
+# Refuse up-front if ${CST_BIN} is a regular file (not a symlink). We
+# check BEFORE creating any directories so a failed install leaves the
+# filesystem untouched.
+if [ -e "${CST_BIN}" ] && [ ! -L "${CST_BIN}" ]; then
+    echo "cst install: ${CST_BIN} exists as a regular file; refusing to overwrite. Remove it or move it aside, then rerun." >&2
+    exit 3
+fi
+
 mkdir -p "${SKILLS_DIR}" "${TASKS_DIR}" "${BIN_DIR}"
 
 # Skill symlink (idempotent)
 ln -sfn "${SKILL_DIR}" "${SKILL_LINK}"
 echo "cst install: skill linked at ${SKILL_LINK} -> ${SKILL_DIR}"
 
-# cst entry symlink (idempotent)
+# cst entry symlink (idempotent; broken-symlink case handled by ln -sfn)
 chmod +x "${SKILL_DIR}/scripts/cst.py"
 ln -sfn "${SKILL_DIR}/scripts/cst.py" "${CST_BIN}"
 echo "cst install: cst linked at ${CST_BIN}"

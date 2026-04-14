@@ -103,6 +103,49 @@ def test_install_refuses_malformed_settings_json(tmp_path):
     assert backups == []
 
 
+def test_install_refuses_when_cst_bin_is_regular_file(tmp_path):
+    home = tmp_path / "install_home"
+    home.mkdir()
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    cst_bin = bin_dir / "cst"
+    # Pre-seed a REGULAR file (not a symlink) at the target path.
+    cst_bin.write_text("echo fake-existing-cst\n")
+    orig_bytes = cst_bin.read_bytes()
+    # Filesystem probes: settings.json should not exist yet and must not
+    # be created by a refused install.
+    settings = home / ".claude/settings.json"
+    assert not settings.exists()
+
+    r = _run_install(home)
+
+    assert r.returncode != 0, "installer must exit non-zero"
+    assert "refusing to overwrite" in (r.stderr + r.stdout)
+    # The pre-existing regular file is untouched (byte-identical, still a regular file).
+    assert cst_bin.is_file() and not cst_bin.is_symlink()
+    assert cst_bin.read_bytes() == orig_bytes
+    # No side effects on disk: settings.json was never created.
+    assert not settings.exists()
+
+
+def test_install_replaces_existing_symlink(tmp_path):
+    """Idempotent re-install: an existing symlink at ${CST_BIN} is replaced."""
+    home = tmp_path / "install_home"
+    home.mkdir()
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    cst_bin = bin_dir / "cst"
+    # Pre-seed a (stale) symlink pointing elsewhere.
+    os.symlink("/tmp/some-old-target", cst_bin)
+    assert cst_bin.is_symlink()
+
+    r = _run_install(home)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert cst_bin.is_symlink()
+    # Link now points at our cst.py.
+    assert str(cst_bin.resolve()).endswith("scripts/cst.py")
+
+
 def test_install_does_not_treat_substring_match_as_duplicate(tmp_path):
     home = tmp_path / "install_home"
     home.mkdir()
