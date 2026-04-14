@@ -194,12 +194,16 @@ def _marquee(s: str, width: int, offset: int) -> str:
     return "".join(out) + " " * max(0, width - used)
 
 
-def _run_subcommand(stdscr, cmd: list[str]) -> None:
-    """Run a csm subcommand outside curses so it can print to terminal."""
+_CSM_PY = _HERE / "csm.py"
+
+
+def _run_csm(stdscr, args: list[str]) -> None:
+    """Run `csm <args>` outside curses. Uses the sibling csm.py directly
+    so PATH doesn't need to include ~/.local/bin/csm."""
     import curses
     curses.endwin()
     try:
-        subprocess.run(cmd, check=False)
+        subprocess.run([sys.executable, str(_CSM_PY), *args], check=False)
         time.sleep(0.3)
     finally:
         stdscr.refresh()
@@ -441,10 +445,10 @@ def _tui(stdscr):
             elif k in ("k",) and rows and sel > 0:
                 sel -= 1
             elif rows and k in ("\n", "\r"):
-                _run_subcommand(stdscr, ["csm", "focus", rows[sel]["session_id"]])
+                _run_csm(stdscr, ["focus", rows[sel]["session_id"]])
                 force_refresh = True
             elif rows and k == "r":
-                _run_subcommand(stdscr, ["csm", "resume", rows[sel]["session_id"]])
+                _run_csm(stdscr, ["resume", rows[sel]["session_id"]])
                 force_refresh = True
             elif rows and k == "n":
                 new = _prompt(stdscr, "note", rows[sel].get("note") or "")
