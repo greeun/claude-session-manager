@@ -51,6 +51,23 @@ case ":${PATH}:" in
         ;;
 esac
 
+# Slash commands: symlink each commands/*.md into ~/.claude/commands/
+# (idempotent — ln -sfn overwrites our own prior symlinks but will not
+# touch a user's unrelated regular file of the same name).
+COMMANDS_DIR="${CLAUDE_DIR}/commands"
+mkdir -p "${COMMANDS_DIR}"
+for src in "${SKILL_DIR}"/commands/*.md; do
+    [ -e "${src}" ] || continue
+    name="$(basename "${src}")"
+    dst="${COMMANDS_DIR}/${name}"
+    if [ -e "${dst}" ] && [ ! -L "${dst}" ]; then
+        echo "cst install: WARNING — ${dst} exists as a regular file; leaving it alone." >&2
+        continue
+    fi
+    ln -sfn "${src}" "${dst}"
+done
+echo "cst install: slash commands linked into ${COMMANDS_DIR}"
+
 # Settings merge (delegated to Python)
 python3 "${SKILL_DIR}/scripts/installer.py" merge-settings
 rc=$?
