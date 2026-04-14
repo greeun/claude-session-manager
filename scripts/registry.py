@@ -24,6 +24,11 @@ _UUID_RE = re.compile(
 )
 
 USER_OWNED_FIELDS = ("title", "priority", "status", "note", "tags")
+PROGRESS_FIELDS = (
+    "last_user_prompt",
+    "last_assistant_summary",
+    "current_task_hint",
+)
 
 
 def _utc_now_iso() -> str:
@@ -71,6 +76,9 @@ def new_record(session_id: str, **overrides: Any) -> dict[str, Any]:
         "note": "",
         "created_at": now,
         "last_activity_at": now,
+        "last_user_prompt": "",
+        "last_assistant_summary": "",
+        "current_task_hint": "",
         "terminal": {
             "app": None,
             "window_id": None,
@@ -122,22 +130,34 @@ def _isolate_corrupt(path: Path) -> Path:
     return new
 
 
+def _ensure_progress_defaults(rec: dict[str, Any]) -> dict[str, Any]:
+    """Fill missing progress fields with empty strings (Sprint 2 compat)."""
+    for k in PROGRESS_FIELDS:
+        if k not in rec:
+            rec[k] = ""
+    return rec
+
+
 def read(session_id: str) -> dict[str, Any] | None:
     """Return the record for ``session_id`` or ``None`` if missing/corrupt.
 
     Corrupt files are renamed out of the way before returning ``None``.
+    Missing progress fields are filled with empty strings.
     """
     p = record_path(session_id)
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        rec = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         try:
             _isolate_corrupt(p)
         except OSError:
             pass
         return None
+    if isinstance(rec, dict):
+        _ensure_progress_defaults(rec)
+    return rec
 
 
 def write(record: dict[str, Any]) -> Path:
@@ -153,7 +173,13 @@ def update(session_id: str, **fields: Any) -> dict[str, Any] | None:
 
     Returns the updated record, or ``None`` if the record does not exist.
     Setting any of the USER_OWNED_FIELDS flips ``auto_detected`` to False.
+    Refuses to write any of the PROGRESS_FIELDS (scanner-owned).
     """
+    forbidden = set(fields) & set(PROGRESS_FIELDS)
+    if forbidden:
+        raise ValueError(
+            f"registry.update refuses progress-owned fields: {sorted(forbidden)}"
+        )
     rec = read(session_id)
     if rec is None:
         return None
@@ -256,6 +282,7 @@ def iter_records() -> Iterable[dict[str, Any]]:
         if not is_valid_uuid(stem):
             # Ignore non-uuid-named JSON files (defensive).
             continue
+        _ensure_progress_defaults(data)
         yield data
 
 
