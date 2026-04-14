@@ -22,7 +22,7 @@ if str(_SCRIPTS) not in sys.path:
 # Expose for tests that need to spawn subprocesses.
 SKILL_ROOT = _SKILL_ROOT
 SCRIPTS_DIR = _SCRIPTS
-CST_PY = _SCRIPTS / "cst.py"
+CST_PY = _SCRIPTS / "csm.py"
 INSTALL_SH = _SKILL_ROOT / "install.sh"
 
 

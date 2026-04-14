@@ -1,4 +1,4 @@
-"""``cst statusline`` — compact pending/stale summary for Claude Code.
+"""``csm statusline`` — compact pending/stale summary for Claude Code.
 
 Per sprint_contract.md §2.9. Forbidden: subprocess, network, JSONL
 parsing. Must return in ≤ 150ms for 200 records.

@@ -33,7 +33,7 @@ def test_list_empty_exits_zero():
 def test_version_flag():
     r = _run(["--version"])
     assert r.returncode == 0
-    assert r.stdout.strip() == "cst 0.2.0"
+    assert r.stdout.strip() == "csm 0.2.0"
 
 
 def test_set_then_list():
@@ -229,7 +229,7 @@ def test_list_stale_banner_appears():
     assert r.stdout.startswith(("\u26a0", "\u25cf", "\u25cb")) or "\u26a0" in r.stdout
     assert "\u26a0" in r.stdout
     assert "stale" in r.stdout
-    assert "run 'cst review-stale'" in r.stdout
+    assert "run 'csm review-stale'" in r.stdout
 
 
 def test_list_stale_flag_filters():
@@ -262,7 +262,7 @@ def test_json_omits_stale_banner_across_flag_combos():
         r = _run(["list", *flags, "--json"])
         assert r.returncode == 0, (flags, r.stderr)
         assert "\u26a0" not in r.stdout
-        assert "cst review-stale" not in r.stdout
+        assert "csm review-stale" not in r.stdout
         rows = json.loads(r.stdout)
         for row in rows:
             for k in (
@@ -371,7 +371,7 @@ def test_gc_empty_registry_exits_0_with_summary():
     r = _run(["gc"])
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == (
-        "cst gc: deleted 0 record(s); kept 0 archived record(s) "
+        "csm gc: deleted 0 record(s); kept 0 archived record(s) "
         "still within the 7-day window"
     )
 

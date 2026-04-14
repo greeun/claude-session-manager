@@ -58,7 +58,7 @@ def resolve(prefix: str) -> Resolution:
 def print_ambiguous(prefix: str, candidates: list[dict], stream=None) -> None:
     """Write the ambiguous-prefix candidate list to stderr (default)."""
     stream = stream or sys.stderr
-    stream.write(f"cst: ambiguous prefix '{prefix}'; candidates:\n")
+    stream.write(f"csm: ambiguous prefix '{prefix}'; candidates:\n")
     for r in candidates:
         sid = r.get("session_id", "")
         short = sid[:8]
@@ -79,7 +79,7 @@ def resolve_or_exit(prefix: str) -> str:
         return res.session_id  # type: ignore[return-value]
     if res.status == TOO_SHORT:
         sys.stderr.write(
-            "cst: session id must be the full UUID or a prefix of "
+            "csm: session id must be the full UUID or a prefix of "
             "at least 6 hex characters\n"
         )
         sys.exit(2)
@@ -87,5 +87,5 @@ def resolve_or_exit(prefix: str) -> str:
         print_ambiguous(prefix, res.candidates)
         sys.exit(3)
     # NOT_FOUND
-    sys.stderr.write(f"cst: no such session: {prefix}\n")
+    sys.stderr.write(f"csm: no such session: {prefix}\n")
     sys.exit(1)

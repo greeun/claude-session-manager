@@ -1,4 +1,4 @@
-"""``cst watch`` — curses-based interactive TUI.
+"""``csm watch`` — curses-based interactive TUI.
 
 Keybindings:
     ↑ / ↓ / k / j   move highlight
@@ -15,7 +15,7 @@ Keybindings:
     ?               help overlay
     q / Esc         quit
 
-``cst watch --pin`` opens a new iTerm2 window running ``cst watch``.
+``csm watch --pin`` opens a new iTerm2 window running ``csm watch``.
 """
 from __future__ import annotations
 
@@ -195,7 +195,7 @@ def _marquee(s: str, width: int, offset: int) -> str:
 
 
 def _run_subcommand(stdscr, cmd: list[str]) -> None:
-    """Run a cst subcommand outside curses so it can print to terminal."""
+    """Run a csm subcommand outside curses so it can print to terminal."""
     import curses
     curses.endwin()
     try:
@@ -263,7 +263,7 @@ def _apply_filter(rows: list[dict], q: str) -> list[dict]:
 def _help_overlay(stdscr) -> None:
     import curses
     lines = [
-        "cst watch — keybindings",
+        "csm watch — keybindings",
         "",
         "  ↑/↓/k/j   move highlight",
         "  PgUp/PgDn page    Home/End first/last",
@@ -339,7 +339,7 @@ def _tui(stdscr):
 
         filt_hint = f"  filter: {filt!r}" if filt else ""
         header = (
-            f" cst watch  {len(rows)}/{len(all_rows)}{filt_hint}   "
+            f" csm watch  {len(rows)}/{len(all_rows)}{filt_hint}   "
             "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  /=filter  ?=help  q=quit "
         )
         _safe_addnstr(stdscr, 0, 0, header.ljust(w), w, curses.color_pair(2) | curses.A_BOLD)
@@ -441,10 +441,10 @@ def _tui(stdscr):
             elif k in ("k",) and rows and sel > 0:
                 sel -= 1
             elif rows and k in ("\n", "\r"):
-                _run_subcommand(stdscr, ["cst", "focus", rows[sel]["session_id"]])
+                _run_subcommand(stdscr, ["csm", "focus", rows[sel]["session_id"]])
                 force_refresh = True
             elif rows and k == "r":
-                _run_subcommand(stdscr, ["cst", "resume", rows[sel]["session_id"]])
+                _run_subcommand(stdscr, ["csm", "resume", rows[sel]["session_id"]])
                 force_refresh = True
             elif rows and k == "n":
                 new = _prompt(stdscr, "note", rows[sel].get("note") or "")
@@ -488,7 +488,7 @@ def _tui(stdscr):
 
 def run(refresh_interval: float = REFRESH_SECONDS) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        sys.stderr.write("cst watch: requires a TTY\n")
+        sys.stderr.write("csm watch: requires a TTY\n")
         return 2
     import curses
     try:
@@ -498,7 +498,7 @@ def run(refresh_interval: float = REFRESH_SECONDS) -> int:
     return 0
 
 
-# --- cst watch --pin ------------------------------------------------------- #
+# --- csm watch --pin ------------------------------------------------------- #
 
 _PIN_APPLESCRIPT = '''tell application "iTerm2"
     create window with default profile
@@ -513,15 +513,15 @@ end tell
 
 def pin_in_iterm() -> int:
     if sys.platform != "darwin":
-        sys.stderr.write("cst watch --pin: only supported on macOS\n")
+        sys.stderr.write("csm watch --pin: only supported on macOS\n")
         return 6
     if not shutil.which("osascript"):
-        sys.stderr.write("cst watch --pin: osascript not found\n")
+        sys.stderr.write("csm watch --pin: osascript not found\n")
         return 6
-    cmd = '"cst watch"'
+    cmd = '"csm watch"'
     script = _PIN_APPLESCRIPT.format(cmd=cmd)
     r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     if r.returncode != 0:
-        sys.stderr.write(f"cst watch --pin: iTerm2 not available ({r.stderr.strip()})\n")
+        sys.stderr.write(f"csm watch --pin: iTerm2 not available ({r.stderr.strip()})\n")
         return 6
     return 0

@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 
 HOOK_COMMANDS = {
-    "SessionStart": "cst hook session-start",
-    "UserPromptSubmit": "cst hook activity",
+    "SessionStart": "csm hook session-start",
+    "UserPromptSubmit": "csm hook activity",
 }
 
 
@@ -52,7 +52,7 @@ def _load_settings(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
-        sys.stderr.write(f"cst install: cannot read {path}: {e}\n")
+        sys.stderr.write(f"csm install: cannot read {path}: {e}\n")
         sys.exit(1)
     if not text.strip():
         return {}
@@ -60,14 +60,14 @@ def _load_settings(path: Path) -> dict[str, Any]:
         data = json.loads(text)
     except json.JSONDecodeError as e:
         sys.stderr.write(
-            f"cst install: {path} is not valid JSON ({e.__class__.__name__}: {e}).\n"
-            "cst install: refusing to modify it. Please fix or remove the file "
+            f"csm install: {path} is not valid JSON ({e.__class__.__name__}: {e}).\n"
+            "csm install: refusing to modify it. Please fix or remove the file "
             "and re-run install.\n"
         )
         sys.exit(2)
     if not isinstance(data, dict):
         sys.stderr.write(
-            f"cst install: {path} is not a JSON object; refusing to modify.\n"
+            f"csm install: {path} is not a JSON object; refusing to modify.\n"
         )
         sys.exit(2)
     return data
@@ -88,6 +88,33 @@ def _existing_commands(hooks_for_event: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+_LEGACY_HOOK_PREFIX = "cst hook "
+
+
+def _strip_legacy_hooks(arr: list[dict[str, Any]]) -> int:
+    """Remove our old `cst hook ...` entries in-place. Returns count removed."""
+    removed = 0
+    i = 0
+    while i < len(arr):
+        entry = arr[i]
+        inner = entry.get("hooks") if isinstance(entry, dict) else None
+        if isinstance(inner, list):
+            inner[:] = [
+                h for h in inner
+                if not (
+                    isinstance(h, dict)
+                    and isinstance(h.get("command"), str)
+                    and h["command"].startswith(_LEGACY_HOOK_PREFIX)
+                )
+            ]
+            if not inner:
+                arr.pop(i)
+                removed += 1
+                continue
+        i += 1
+    return removed
+
+
 def _merge_hooks(settings: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
     """Ensure both hook commands are present (full-string match).
 
@@ -101,6 +128,7 @@ def _merge_hooks(settings: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
         if not isinstance(arr, list):
             arr = []
             hooks[event] = arr
+        _strip_legacy_hooks(arr)
         existing_cmds = _existing_commands(arr)
         existing_total += len(existing_cmds)
         # Full-string equality — NOT substring.
@@ -116,7 +144,7 @@ def _merge_hooks(settings: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
     return settings, existing_total, appended_total
 
 
-STATUSLINE_COMMAND = "cst statusline"
+STATUSLINE_COMMAND = "csm statusline"
 
 
 def _merge_statusline(settings: dict[str, Any]) -> str:
@@ -124,10 +152,15 @@ def _merge_statusline(settings: dict[str, Any]) -> str:
 
     Returns one of:
     - ``"added"`` — statusLine was absent; we set it to our canonical shape.
-    - ``"kept_ours"`` — statusLine already points at ``cst statusline``; no-op.
+    - ``"kept_ours"`` — statusLine already points at ``csm statusline``; no-op.
     - ``"kept_existing"`` — a different statusLine is present; we did NOT overwrite.
     """
     existing = settings.get("statusLine")
+    # Treat our legacy `cst statusline` as upgradable (we own it).
+    if isinstance(existing, dict):
+        ecmd = existing.get("command")
+        if isinstance(ecmd, str) and ecmd == "cst statusline":
+            existing = None
     if not isinstance(existing, dict):
         settings["statusLine"] = {
             "type": "command",
@@ -156,25 +189,25 @@ def merge_settings() -> int:
     status_action = _merge_statusline(settings)
     _atomic_write_json(path, settings)
     sys.stdout.write(
-        f"cst install: merged hooks into {path} "
+        f"csm install: merged hooks into {path} "
         f"(found {existing_h} existing hook entr{'y' if existing_h == 1 else 'ies'}, "
         f"appended {appended_h} new)\n"
     )
     if status_action == "added":
         sys.stdout.write(
-            f"cst install: statusLine set to '{STATUSLINE_COMMAND}'\n"
+            f"csm install: statusLine set to '{STATUSLINE_COMMAND}'\n"
         )
     elif status_action == "kept_ours":
         sys.stdout.write(
-            f"cst install: statusLine already set to '{STATUSLINE_COMMAND}'; no change\n"
+            f"csm install: statusLine already set to '{STATUSLINE_COMMAND}'; no change\n"
         )
     elif status_action == "kept_existing":
         sys.stdout.write(
-            "cst install: existing statusline detected; NOT overwriting.\n"
-            "cst install: to combine, wrap your current statusLine command so it also calls:\n"
-            f"    $(cst statusline)\n"
-            "cst install: for example, change your existing command to:\n"
-            "    sh -c 'your-existing-command; cst statusline'\n"
+            "csm install: existing statusline detected; NOT overwriting.\n"
+            "csm install: to combine, wrap your current statusLine command so it also calls:\n"
+            f"    $(csm statusline)\n"
+            "csm install: for example, change your existing command to:\n"
+            "    sh -c 'your-existing-command; csm statusline'\n"
         )
     return 0
 

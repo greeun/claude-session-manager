@@ -13,7 +13,7 @@ from conftest import INSTALL_SH, SKILL_ROOT
 def _run_install(home: Path) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    # Don't let a stale CST_REGISTRY_DIR leak into the installer's cst smoke test.
+    # Don't let a stale CST_REGISTRY_DIR leak into the installer's csm smoke test.
     env.pop("CST_REGISTRY_DIR", None)
     return subprocess.run(
         ["bash", str(INSTALL_SH)],
@@ -44,8 +44,8 @@ def test_install_idempotent(tmp_path):
     assert r2.returncode == 0, r2.stderr + r2.stdout
 
     settings = json.loads((home / ".claude/settings.json").read_text())
-    assert _hook_commands(settings, "SessionStart").count("cst hook session-start") == 1
-    assert _hook_commands(settings, "UserPromptSubmit").count("cst hook activity") == 1
+    assert _hook_commands(settings, "SessionStart").count("csm hook session-start") == 1
+    assert _hook_commands(settings, "UserPromptSubmit").count("csm hook activity") == 1
 
 
 def test_install_from_missing_settings_json(tmp_path):
@@ -86,7 +86,7 @@ def test_install_preserves_existing_statusline(tmp_path):
     # Warning emitted on stdout mentioning the existing statusline.
     assert "existing statusline" in (r.stdout + r.stderr).lower()
     # And hooks still got merged.
-    assert "cst hook session-start" in _hook_commands(s, "SessionStart")
+    assert "csm hook session-start" in _hook_commands(s, "SessionStart")
 
 
 def test_install_sets_fresh_statusline(tmp_path):
@@ -100,12 +100,12 @@ def test_install_sets_fresh_statusline(tmp_path):
     assert isinstance(sl, dict)
     assert set(sl.keys()) == {"type", "command", "padding"}
     assert sl["type"] == "command"
-    assert sl["command"] == "cst statusline"
+    assert sl["command"] == "csm statusline"
     assert sl["padding"] == 0
 
 
 def test_install_idempotent_statusline(tmp_path):
-    """Re-running the installer leaves a prior cst statusline untouched."""
+    """Re-running the installer leaves a prior csm statusline untouched."""
     home = tmp_path / "install_home"
     home.mkdir()
     _run_install(home)
@@ -114,7 +114,7 @@ def test_install_idempotent_statusline(tmp_path):
     sl = s["statusLine"]
     assert set(sl.keys()) == {"type", "command", "padding"}
     assert sl["type"] == "command"
-    assert sl["command"] == "cst statusline"
+    assert sl["command"] == "csm statusline"
     assert sl["padding"] == 0
 
 
@@ -139,7 +139,7 @@ def test_install_refuses_when_cst_bin_is_regular_file(tmp_path):
     home.mkdir()
     bin_dir = home / ".local/bin"
     bin_dir.mkdir(parents=True)
-    cst_bin = bin_dir / "cst"
+    cst_bin = bin_dir / "csm"
     # Pre-seed a REGULAR file (not a symlink) at the target path.
     cst_bin.write_text("echo fake-existing-cst\n")
     orig_bytes = cst_bin.read_bytes()
@@ -165,7 +165,7 @@ def test_install_replaces_existing_symlink(tmp_path):
     home.mkdir()
     bin_dir = home / ".local/bin"
     bin_dir.mkdir(parents=True)
-    cst_bin = bin_dir / "cst"
+    cst_bin = bin_dir / "csm"
     # Pre-seed a (stale) symlink pointing elsewhere.
     os.symlink("/tmp/some-old-target", cst_bin)
     assert cst_bin.is_symlink()
@@ -173,8 +173,8 @@ def test_install_replaces_existing_symlink(tmp_path):
     r = _run_install(home)
     assert r.returncode == 0, r.stderr + r.stdout
     assert cst_bin.is_symlink()
-    # Link now points at our cst.py.
-    assert str(cst_bin.resolve()).endswith("scripts/cst.py")
+    # Link now points at our csm.py.
+    assert str(cst_bin.resolve()).endswith("scripts/csm.py")
 
 
 def test_install_does_not_treat_substring_match_as_duplicate(tmp_path):
@@ -191,7 +191,7 @@ def test_install_does_not_treat_substring_match_as_duplicate(tmp_path):
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": "cst hook session-start --debug",
+                                    "command": "csm hook session-start --debug",
                                 }
                             ],
                         }
@@ -205,5 +205,5 @@ def test_install_does_not_treat_substring_match_as_duplicate(tmp_path):
     s = json.loads((home / ".claude/settings.json").read_text())
     cmds = _hook_commands(s, "SessionStart")
     # The --debug entry must survive AND the canonical entry must be added.
-    assert "cst hook session-start --debug" in cmds
-    assert "cst hook session-start" in cmds
+    assert "csm hook session-start --debug" in cmds
+    assert "csm hook session-start" in cmds

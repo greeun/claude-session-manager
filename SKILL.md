@@ -1,15 +1,15 @@
 ---
 name: claude-session-manager
-description: Track, triage, focus, and resume every concurrent Claude Code session on macOS. Use when the user asks about managing multiple Claude Code windows, listing tasks across terminals, finding which terminal window owns a session, jumping to that window, resuming a closed session, marking sessions done or stale, cleaning up archived records, or invokes the `cst` command. Trigger words include cst, claude session manager, task list, tasks, register session, task register, task priority, task focus, task resume, task statusline, stale sessions, review-stale, gc.
+description: Track, triage, focus, and resume every concurrent Claude Code session on macOS. Use when the user asks about managing multiple Claude Code windows, listing tasks across terminals, finding which terminal window owns a session, jumping to that window, resuming a closed session, marking sessions done or stale, cleaning up archived records, or invokes the `csm` command. Trigger words include cst, claude session manager, task list, tasks, register session, task register, task priority, task focus, task resume, task statusline, stale sessions, review-stale, gc.
 ---
 
-# Claude Session Manager (`cst`)
+# Claude Session Manager (`csm`)
 
 Sprint 2 delivers the daily-driver surface: progress capture
 (last_user_prompt / last_assistant_summary / current_task_hint),
-multi-line `cst list`, live-vs-idle dot, stale detection + triage
-wizard, short-id prefix matching, `cst focus`/`cst resume`, statusline
-command with installer wiring, macOS platform guard, `cst gc`, and a
+multi-line `csm list`, live-vs-idle dot, stale detection + triage
+wizard, short-id prefix matching, `csm focus`/`csm resume`, statusline
+command with installer wiring, macOS platform guard, `csm gc`, and a
 config file for the stale threshold. Slash commands and the `watch`
 TUI arrive in Sprint 3.
 
@@ -17,7 +17,7 @@ TUI arrive in Sprint 3.
 
 - Several Claude Code terminal windows are open and the user asks
   collectively ("which sessions are open?", "show my tasks").
-- The user runs or mentions `cst`.
+- The user runs or mentions `csm`.
 - The user asks to jump to / focus / resume a session window.
 - The user asks about stale or archived sessions.
 
@@ -30,48 +30,48 @@ bash install.sh
 
 The installer:
 
-- Creates `~/.local/bin/cst` pointing at `scripts/cst.py`. Refuses to
+- Creates `~/.local/bin/csm` pointing at `scripts/csm.py`. Refuses to
   clobber a pre-existing regular file at that path.
 - Creates `~/.claude/skills/claude-session-manager` symlink.
 - Creates `~/.claude/claude-tasks/` (registry dir).
 - Merges `SessionStart` and `UserPromptSubmit` hook entries into
   `~/.claude/settings.json` exactly once (full-string-equality match).
-- Installs `"statusLine": {"type":"command", "command":"cst statusline", "padding":0}`
+- Installs `"statusLine": {"type":"command", "command":"csm statusline", "padding":0}`
   **only when no statusLine already exists**. An existing value is
   never overwritten; a warning and integration instructions are
   printed instead.
 - If `~/.claude/settings.json` exists but is malformed JSON, the
   installer exits with code 2 and does NOT modify the file.
-- Runs `cst list` as a smoke test.
+- Runs `csm list` as a smoke test.
 
 Rerun the installer any time. It is idempotent.
 
 ## CLI (Sprint 2)
 
 ```
-cst --version                       # cst 0.2.0
+csm --version                       # csm 0.2.0
 
-cst list                            # multi-line: headline + ⤷ prompt + ⚙ hint
-cst list --compact                  # one line per session (CI/pipelines)
-cst list --all                      # include archived
-cst list --stale                    # only stale rows
-cst list --json                     # JSON array with all progress + live keys
+csm list                            # multi-line: headline + ⤷ prompt + ⚙ hint
+csm list --compact                  # one line per session (CI/pipelines)
+csm list --all                      # include archived
+csm list --stale                    # only stale rows
+csm list --json                     # JSON array with all progress + live keys
 
-cst set <id|prefix>  [--title ...] [--priority high|medium|low]
+csm set <id|prefix>  [--title ...] [--priority high|medium|low]
                      [--status in_progress|blocked|waiting|done]
                      [--note ...] [--tags a,b]
-cst done    <id|prefix>
-cst archive <id|prefix>
+csm done    <id|prefix>
+csm archive <id|prefix>
 
-cst focus   <id|prefix>             # bring terminal to front (macOS only)
-cst resume  <id|prefix>             # new window + `claude --resume <id>`
-cst gc                              # delete records archived > 7 days ago
-cst review-stale                    # interactive keep/done/archive/skip
-cst statusline                      # compact pending/stale summary
+csm focus   <id|prefix>             # bring terminal to front (macOS only)
+csm resume  <id|prefix>             # new window + `claude --resume <id>`
+csm gc                              # delete records archived > 7 days ago
+csm review-stale                    # interactive keep/done/archive/skip
+csm statusline                      # compact pending/stale summary
 
-cst scan                            # scan ~/.claude/projects/, upsert drafts
-cst hook session-start              # called by Claude Code SessionStart hook
-cst hook activity                   # called by Claude Code UserPromptSubmit hook
+csm scan                            # scan ~/.claude/projects/, upsert drafts
+csm hook session-start              # called by Claude Code SessionStart hook
+csm hook activity                   # called by Claude Code UserPromptSubmit hook
 ```
 
 **Short-id prefix matching.** Every id-taking subcommand accepts a
@@ -87,7 +87,7 @@ anything; not-found exits 1.
 title, project, relative time. Two optional dim sub-rows follow:
 `⤷ <last user prompt>` (U+2937) and `⚙ <current task hint>` (U+2699).
 When any session is stale, a footer banner
-`⚠ N stale sessions — run 'cst review-stale'` appears. `--compact`
+`⚠ N stale sessions — run 'csm review-stale'` appears. `--compact`
 omits all sub-rows and the banner; `--json` omits all non-JSON chrome.
 
 ## Progress capture
@@ -131,13 +131,13 @@ Both hook subcommands parse a JSON payload on stdin FIRST
 `prompt` or `user_prompt` for `UserPromptSubmit`). Env vars
 (`CLAUDE_SESSION_ID`, `CLAUDE_PROJECT_DIR`, `PWD`) are used only as
 fallback. Hooks always exit 0; any failure is timestamped into
-`~/.claude/claude-tasks/.hook-errors.log`. When `cst hook activity`
+`~/.claude/claude-tasks/.hook-errors.log`. When `csm hook activity`
 fires for an unknown `session_id`, a skeleton record is created so
 the session shows up immediately.
 
 ## macOS platform guard
 
-`cst focus` and `cst resume` require macOS. On any non-darwin
+`csm focus` and `csm resume` require macOS. On any non-darwin
 platform they exit 6 with a clear message. All other subcommands
 work on any platform (live-dot degrades silently to `○` when `ps`
 misbehaves).
@@ -149,7 +149,7 @@ misbehaves).
 - `scripts/scanner.py` — transcript tail extraction with "fresher wins".
 - `scripts/hooks.py` — stdin-first hook entry points, UserPromptSubmit
   writes `last_user_prompt` + create-skeleton for unknown id.
-- `scripts/cst.py` — CLI dispatcher, multi-line list, stale/live
+- `scripts/csm.py` — CLI dispatcher, multi-line list, stale/live
   display.
 - `scripts/resolver.py` — short-id prefix resolver.
 - `scripts/livedot.py` — `ps -o pid,tty,comm` parsing.
@@ -158,7 +158,7 @@ misbehaves).
   escape layers.
 - `scripts/statusline.py` — read-only pending/stale count.
 - `scripts/review_stale.py` — interactive keep/done/archive/skip.
-- `scripts/cst_gc.py` — archived > 7 day deletion.
+- `scripts/csm_gc.py` — archived > 7 day deletion.
 - `scripts/config.py` — stale threshold loader.
 - `scripts/platform_macos.py` — macOS guard with test override.
 - `scripts/installer.py` — settings.json merge, statusline wiring.
@@ -168,7 +168,7 @@ misbehaves).
 ## What is NOT in Sprint 2
 
 - Slash commands (`/tasks`, `/task-register`, etc.).
-- `cst watch` TUI.
-- `cst watch --pin` dedicated window.
+- `csm watch` TUI.
+- `csm watch --pin` dedicated window.
 
 These arrive in Sprint 3.

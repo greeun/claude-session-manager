@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""``cst`` — Claude Session Manager CLI.
+"""``csm`` — Claude Session Manager CLI.
 
 Sprint 2 subcommands: Sprint 1 plus ``focus``, ``resume``, ``gc``,
 ``review-stale``, ``statusline``; ``list`` gains ``--compact``,
@@ -15,8 +15,8 @@ import os
 import sys
 from pathlib import Path
 
-# Allow running both as `python3 scripts/cst.py ...` and via symlink in
-# ~/.local/bin/cst. We add this file's directory to sys.path so the
+# Allow running both as `python3 scripts/csm.py ...` and via symlink in
+# ~/.local/bin/csm. We add this file's directory to sys.path so the
 # sibling modules import cleanly even when the symlink is invoked
 # from an arbitrary cwd.
 _HERE = Path(__file__).resolve().parent
@@ -29,7 +29,7 @@ import scanner  # noqa: E402
 import resolver  # noqa: E402
 import livedot  # noqa: E402
 import statusline as sl_mod  # noqa: E402
-import cst_gc as gc_mod  # noqa: E402
+import csm_gc as gc_mod  # noqa: E402
 import review_stale as rs_mod  # noqa: E402
 import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
@@ -151,7 +151,7 @@ def _render_plain_multiline(display_rows: list[dict]) -> None:
 
 
 def _render_pretty(display_rows: list[dict]) -> None:
-    """Rich Table rendering for `cst list` (TTY default)."""
+    """Rich Table rendering for `csm list` (TTY default)."""
     if not sys.stdout.isatty():
         _render_plain_multiline(display_rows)
         return
@@ -268,7 +268,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     )
     if stale_count > 0:
         sys.stdout.write(
-            f"\u26a0 {stale_count} stale sessions — run 'cst review-stale'\n"
+            f"\u26a0 {stale_count} stale sessions — run 'csm review-stale'\n"
         )
     return 0
 
@@ -280,13 +280,13 @@ def cmd_set(args: argparse.Namespace) -> int:
         fields["title"] = args.title
     if args.priority is not None:
         if args.priority not in ("high", "medium", "low"):
-            sys.stderr.write("cst: --priority must be high|medium|low\n")
+            sys.stderr.write("csm: --priority must be high|medium|low\n")
             return 1
         fields["priority"] = args.priority
     if args.status is not None:
         if args.status not in ("in_progress", "blocked", "waiting", "done"):
             sys.stderr.write(
-                "cst: --status must be in_progress|blocked|waiting|done\n"
+                "csm: --status must be in_progress|blocked|waiting|done\n"
             )
             return 1
         fields["status"] = args.status
@@ -296,11 +296,11 @@ def cmd_set(args: argparse.Namespace) -> int:
         tags = [t.strip() for t in args.tags.split(",") if t.strip()]
         fields["tags"] = tags
     if not fields:
-        sys.stderr.write("cst: set requires at least one field\n")
+        sys.stderr.write("csm: set requires at least one field\n")
         return 1
     rec = registry.update(sid, **fields)
     if rec is None:
-        sys.stderr.write(f"cst: record disappeared: {sid}\n")
+        sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
     return 0
 
@@ -309,7 +309,7 @@ def cmd_done(args: argparse.Namespace) -> int:
     sid = _resolve_id_or_exit(args.id)
     rec = registry.read(sid)
     if rec is None:
-        sys.stderr.write(f"cst: record disappeared: {sid}\n")
+        sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
     rec["status"] = "done"
     rec["auto_detected"] = False
@@ -321,7 +321,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
     sid = _resolve_id_or_exit(args.id)
     rec = registry.read(sid)
     if rec is None:
-        sys.stderr.write(f"cst: record disappeared: {sid}\n")
+        sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
     rec["archived"] = True
     rec["archived_at"] = registry._utc_now_iso()
@@ -333,13 +333,13 @@ def cmd_focus(args: argparse.Namespace) -> int:
     sid = _resolve_id_or_exit(args.id)
     if not platform_macos.is_macos():
         sys.stderr.write(
-            f"cst: focus is only supported on macOS "
+            f"csm: focus is only supported on macOS "
             f"(detected: {platform_macos.current_platform()})\n"
         )
         return 6
     rec = registry.read(sid)
     if rec is None:
-        sys.stderr.write(f"cst: record disappeared: {sid}\n")
+        sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
     return focus_mod.run(rec)
 
@@ -348,13 +348,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     sid = _resolve_id_or_exit(args.id)
     if not platform_macos.is_macos():
         sys.stderr.write(
-            f"cst: resume is only supported on macOS "
+            f"csm: resume is only supported on macOS "
             f"(detected: {platform_macos.current_platform()})\n"
         )
         return 6
     rec = registry.read(sid)
     if rec is None:
-        sys.stderr.write(f"cst: record disappeared: {sid}\n")
+        sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
     return resume_mod.run(rec)
 
@@ -393,7 +393,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
         return hook_mod.session_start()
     if args.event == "activity":
         return hook_mod.activity()
-    sys.stderr.write(f"cst: unknown hook event: {args.event}\n")
+    sys.stderr.write(f"csm: unknown hook event: {args.event}\n")
     return 1
 
 
@@ -403,8 +403,8 @@ def cmd_hook(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cst", description="Claude Session Manager")
-    p.add_argument("--version", action="version", version=f"cst {__version__}")
+    p = argparse.ArgumentParser(prog="csm", description="Claude Session Manager")
+    p.add_argument("--version", action="version", version=f"csm {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     pl = sub.add_parser("list", help="list sessions")

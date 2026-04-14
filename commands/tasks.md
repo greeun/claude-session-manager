@@ -1,6 +1,6 @@
 ---
 description: List all tracked Claude Code sessions with priority, progress, and stale indicators
-allowed-tools: Bash(cst:*)
+allowed-tools: Bash(csm:*)
 ---
 
-!`cst list`
+!`csm list`

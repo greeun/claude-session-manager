@@ -1,7 +1,7 @@
 ---
 description: Set status for the current Claude Code session
-allowed-tools: Bash(cst:*)
+allowed-tools: Bash(csm:*)
 argument-hint: "in_progress|blocked|waiting|done"
 ---
 
-!`cst set "$CLAUDE_SESSION_ID" --status "$ARGUMENTS"`
+!`csm set "$CLAUDE_SESSION_ID" --status "$ARGUMENTS"`
