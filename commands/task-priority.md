@@ -1,7 +1,9 @@
 ---
 description: Set priority for the current Claude Code session
-allowed-tools: Bash(csm:*)
+allowed-tools: Bash
 argument-hint: "high|medium|low"
 ---
 
-!`csm set "$CLAUDE_SESSION_ID" --priority "$ARGUMENTS"`
+Use the Bash tool to run: `csm set "$CLAUDE_SESSION_ID" --priority "$ARGUMENTS"`
+
+Report the result.

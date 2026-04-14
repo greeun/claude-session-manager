@@ -1,14 +1,13 @@
 ---
-description: Focus another Claude Code session's terminal window by short id prefix or number
-allowed-tools: Bash(csm:*)
+description: Focus another Claude Code session's terminal window by short id prefix or row number
+allowed-tools: Bash
 argument-hint: "<short-id-prefix|row-number>"
 ---
 
-If $ARGUMENTS is a small integer, first run `csm list --json` to resolve the Nth row's session_id.
-Otherwise treat it as a short-id prefix directly.
+Arguments: $ARGUMENTS
 
-Then run:
+If $ARGUMENTS looks like a small integer (the row number from `/tasks`), first use the Bash tool to run `csm list --json`, parse JSON, and pick the Nth row's `session_id`. Otherwise treat $ARGUMENTS as a short-id prefix directly.
 
-!`csm focus "$ARGUMENTS"`
+Use the Bash tool to run: `csm focus "<resolved-id-or-prefix>"`
 
-If that fails with exit code indicating a missing window, suggest running `csm resume "$ARGUMENTS"` instead.
+If the command reports the window is missing, suggest running `csm resume "<same-id>"` instead.

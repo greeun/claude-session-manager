@@ -1,6 +1,6 @@
 ---
-description: Mark the current Claude Code session as done (short alias for /task-done)
-allowed-tools: Bash(csm:*)
+description: Mark the current Claude Code session as done
+allowed-tools: Bash
 ---
 
-!`csm done "$CLAUDE_SESSION_ID"`
+Use the Bash tool to run `csm done "$CLAUDE_SESSION_ID"` to mark the current session as done. Report the command's output.

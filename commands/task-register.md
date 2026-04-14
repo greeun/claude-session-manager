@@ -1,17 +1,13 @@
 ---
 description: Register the current Claude Code session with a title and optional priority
-allowed-tools: Bash(csm:*)
+allowed-tools: Bash
 argument-hint: "<title> [high|medium|low]"
 ---
 
-Register the current session ($CLAUDE_SESSION_ID) in the claude-session-manager registry.
-
 Arguments: $ARGUMENTS
 
-Parse $ARGUMENTS: treat the final token as priority if it is one of `high`, `medium`, `low`; everything before it (or everything, if no priority token) is the title.
+Parse $ARGUMENTS: if the final whitespace-separated token is one of `high`, `medium`, `low`, treat it as the priority and everything before as the title. Otherwise the entire $ARGUMENTS is the title and priority is `medium`.
 
-Then run:
+Then use the Bash tool to run: `csm set "$CLAUDE_SESSION_ID" --title "<parsed-title>" --priority "<parsed-priority>"`
 
-!`csm set "$CLAUDE_SESSION_ID" --title "<title>" --priority "<priority|medium>"`
-
-Report the resulting row from `csm list` for that session.
+Report the resulting row from running `csm list` filtered to that session.

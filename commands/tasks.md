@@ -1,6 +1,6 @@
 ---
 description: List all tracked Claude Code sessions with priority, progress, and stale indicators
-allowed-tools: Bash(csm:*)
+allowed-tools: Bash
 ---
 
-!`csm list`
+Use the Bash tool to run `csm list` and display the output. If there is a stale banner, note it.
