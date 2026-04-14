@@ -48,7 +48,13 @@ A local macOS tool that lets a power user see every Claude Code session they cur
 2. The watch surface supports keyboard navigation to focus, resume, edit priority / status / note, mark done, or archive the highlighted row.
 3. A `--pin` variant opens the watch in a dedicated small terminal window positioned out of the way (best-effort on terminal apps that support scripted window creation; otherwise degrades to a normal window).
 
-### Flow G — Install and uninstall
+### Flow G — "What was I doing?" at-a-glance progress
+1. User glances at `cst list` (or `/tasks` inside Claude Code) and, without focusing any window, immediately sees for every session: what they last asked Claude, what Claude was in the middle of saying/doing, and — when applicable — a short hint like `Running: pytest -q tests/` or `Editing: scripts/cst.py` describing the last tool action.
+2. This context appears as dim sub-rows underneath each session's headline row. No user input is required to populate it; it is refreshed automatically as the user works (via the user-prompt-submit signal) and as the scanner reprocesses transcripts. Whichever signal is fresher wins.
+3. When the user wants the richer view, opening the watch TUI and highlighting a row shows the full last assistant summary in a detail panel.
+4. When the user wants machine-parseable output (scripts, CI, piping), they pass `--compact` to collapse each session back to a single line.
+
+### Flow H — Install and uninstall
 1. User runs the skill's installer once. It wires up: (a) a `cst` command reachable from their shell, (b) Claude Code hooks that record session start and user prompt activity, (c) the statusline command, (d) the slash commands. It creates the registry data directory if missing.
 2. The installer is idempotent: rerunning it does not duplicate hooks or overwrite an already-customized statusline. If the user already has a statusline configured, the installer does not overwrite it; it prints clear instructions for combining the two.
 3. A smoke test at the end of install confirms `cst list` runs successfully.
@@ -78,6 +84,8 @@ A local macOS tool that lets a power user see every Claude Code session they cur
 | Corrupt file isolation | A damaged registry record is renamed out of the way (preserved for inspection), never deleted, and the rest of the registry keeps working. | Robustness: one bad file never breaks the tool. | N |
 | Configurable stale threshold | Single-value user config to override the 4h default. | Power users tune freshness to their workflow. | N |
 | Idempotent install / uninstall | Installer can be rerun safely; existing hook arrays get the entries appended once; existing statusline configs are not overwritten silently. | Safe to redeploy after upgrades. | N |
+| Progress capture | Automatically record, for every session, the last user prompt (truncated to ~100 chars), the first line / ≤100 chars of the most recent assistant response, and a short "current task hint" derived from the last tool-use block in the transcript (e.g. `Running: pytest -q tests/`, `Editing: scripts/cst.py`; blank when no recent tool use). All three are scanner-owned and updated automatically — the user never enters them. No external AI model call is made; values come from extracting and truncating fields already present in the transcript. | Answers "what was I doing in that window?" without opening it. | **Y** (fields are summaries / first-line extractions of assistant-generated content) |
+| Progress display in lists | `cst list` and `/tasks` render each session as a headline row plus up to two dim sub-rows showing the last user prompt and the current task hint. A `--compact` flag collapses each session back to a single line for scripting. The watch TUI's detail panel additionally shows the full last assistant summary. | Scannable at-a-glance context in every listing surface. | **Y** (derived from assistant output) |
 
 ## 5. Data model
 
@@ -99,6 +107,10 @@ One record per Claude Code session. Conceptual fields (not schema):
 - **Context fields**
   - Working directory — absolute path where `claude` was launched.
   - Project name — short label for the project the session belongs to.
+- **Progress fields** (scanner-owned; never user-editable; the scanner overwrites these freely on each pass. Populated by extracting and truncating transcript content — no external AI model call is made.)
+  - Last user prompt — the most recent user message in the session, truncated to about 100 characters / one line. Also refreshed from Claude Code's user-prompt-submit signal; whichever signal is fresher wins.
+  - Last assistant summary — the first line, or up to ~100 characters, of Claude's most recent response in the session.
+  - Current task hint — a short derived label describing the most recent tool-use action in the transcript (e.g. `Running: pytest -q tests/`, `Editing: scripts/cst.py`). Null / empty when no tool-use block is near the tail.
 - **Timing fields**
   - Created-at timestamp.
   - Last-activity-at timestamp — updated by hook on each user prompt submit and by the scanner from transcript file modification time.
@@ -134,23 +146,29 @@ There are exactly four user-visible surfaces, all reading the same registry.
 
 ### 6.1 CLI — `cst list` (and variants)
 
-**Shows.** A table of non-archived sessions, sorted by priority then recency. Each row: short id, live-vs-idle dot (`●` live / `○` idle), priority badge, status (with `stale` called out), title, project name, last activity relative time. A footer banner appears when any stale sessions exist, instructing the user to run `cst review-stale`.
+**Shows.** A list of non-archived sessions, sorted by priority then recency. Each session renders as a headline row plus up to two dim sub-rows:
+- Headline row: short id, live-vs-idle dot (`●` live / `○` idle), priority badge, status (with `stale` called out), title, project name, last activity relative time.
+- Sub-row 1 (dim): `⤷ <last user prompt>` — skipped if empty.
+- Sub-row 2 (dim): `⚙ <current task hint>` — skipped when no tool-use is near the tail of the transcript.
+
+A footer banner appears when any stale sessions exist, instructing the user to run `cst review-stale`.
 
 **Variants.**
 - `cst list --all` includes archived rows.
 - `cst list --stale` shows only stale rows.
+- `cst list --compact` collapses each session back to a single headline line (no sub-rows). Intended for scripting, CI, and pipelines.
 
 **User can.** Copy a short id, pipe to other tools, decide their next action. This surface is read-only; mutations happen through other `cst` subcommands.
 
 ### 6.2 CLI — `cst watch` (TUI)
 
-**Shows.** The same ranked list as `cst list`, auto-refreshing on a short interval (roughly every 2 seconds), with a highlighted current row.
+**Shows.** The same ranked list as `cst list` (including the progress sub-rows), auto-refreshing on a short interval (roughly every 2 seconds), with a highlighted current row. A detail panel for the highlighted row additionally shows the full last assistant summary, the full last user prompt, and the full current task hint (none of which are truncated in the panel view).
 
 **User can.** Move the highlight with arrow keys, and from the highlighted row: focus the owning window (Enter), resume in a new window, edit note / priority / status, mark done, archive, or quit. A `--pin` invocation opens the TUI in a dedicated small terminal window when the terminal app supports scripted window creation.
 
 ### 6.3 Claude Code statusline
 
-**Shows.** A single short line of text, e.g. `📋 3 pending · 1 stale  →  /tasks`. The stale segment is omitted when the count is zero. Must render fast enough not to lag the chat UI (target: tens of milliseconds).
+**Shows.** A single short line of text, e.g. `📋 3 pending · 1 stale  →  /tasks`. The stale segment is omitted when the count is zero. Must render fast enough not to lag the chat UI (target: tens of milliseconds). Progress fields (last user prompt / last assistant summary / current task hint) are intentionally NOT shown here due to space constraints.
 
 **User can.** Read only — the statusline does not accept input. The arrow serves as a nudge to run `/tasks`.
 
