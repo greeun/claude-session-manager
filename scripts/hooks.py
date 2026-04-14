@@ -98,9 +98,19 @@ def _terminal_capture() -> dict[str, Any]:
         tty = os.ttyname(0)
     except OSError:
         pass
+    window_id: str | None = None
+    # WezTerm sets WEZTERM_PANE in every shell it spawns. Capture it so
+    # `cst focus` can call `wezterm cli activate-pane --pane-id <id>`.
+    wez_pane = os.environ.get("WEZTERM_PANE")
+    if wez_pane:
+        if term_app is None:
+            term_app = "WezTerm"
+        window_id = wez_pane
+    # iTerm2 sets ITERM_SESSION_ID like "w0t0p0:UUID"; the window id is
+    # accessible via AppleScript on focus. Nothing to capture here.
     return {
         "app": term_app,
-        "window_id": None,
+        "window_id": window_id,
         "tab_id": None,
         "tty": tty,
     }
