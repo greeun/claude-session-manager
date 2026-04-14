@@ -28,7 +28,7 @@ def _log_path() -> Path:
 def log_error(msg: str) -> None:
     """Append a timestamped error line. Never raises."""
     try:
-        ts = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         line = f"{ts} {msg}\n"
         p = _log_path()
         p.parent.mkdir(parents=True, exist_ok=True)

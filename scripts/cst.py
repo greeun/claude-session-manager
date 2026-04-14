@@ -41,7 +41,7 @@ def _relative_time(iso: str | None) -> str:
         t = _dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
     except (TypeError, ValueError):
         return iso
-    delta = _dt.datetime.utcnow() - t
+    delta = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - t
     sec = int(delta.total_seconds())
     if sec < 0:
         sec = 0
@@ -174,7 +174,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
         sys.stderr.write(f"cst: record disappeared: {sid}\n")
         return 1
     rec["archived"] = True
-    rec["archived_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec["archived_at"] = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     registry.write(rec)
     return 0
 
