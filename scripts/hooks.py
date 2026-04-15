@@ -94,10 +94,44 @@ def _resolve_cwd(payload: dict[str, Any]) -> str | None:
 def _terminal_capture() -> dict[str, Any]:
     term_app = os.environ.get("TERM_PROGRAM") or None
     tty: str | None = None
-    try:
-        tty = os.ttyname(0)
-    except OSError:
-        pass
+    for fd in (0, 1, 2):
+        try:
+            tty = os.ttyname(fd)
+            break
+        except OSError:
+            continue
+    if tty is None:
+        try:
+            with open("/dev/tty") as _fh:
+                tty = os.ttyname(_fh.fileno())
+        except OSError:
+            pass
+    if tty is None:
+        # Claude Code spawns hooks without a controlling TTY, so stdin/
+        # stdout/stderr and /dev/tty all fail. Walk up the parent chain
+        # via ps — the `claude` ancestor still has the real tty.
+        import subprocess as _sp
+        pid = os.getpid()
+        for _ in range(12):
+            try:
+                r = _sp.run(
+                    ["ps", "-o", "ppid=,tty=", "-p", str(pid)],
+                    capture_output=True, text=True, timeout=2,
+                )
+            except (_sp.SubprocessError, OSError):
+                break
+            parts = (r.stdout or "").split()
+            if len(parts) < 2:
+                break
+            ppid_s, tty_s = parts[0], parts[1]
+            if tty_s and tty_s not in ("?", "??", "-"):
+                tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
+                break
+            if not ppid_s.isdigit():
+                break
+            pid = int(ppid_s)
+            if pid <= 1:
+                break
     window_id: str | None = None
     extra: dict[str, Any] = {}
     # WezTerm.
