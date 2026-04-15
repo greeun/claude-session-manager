@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +53,60 @@ def _load_rows() -> list[dict]:
         r["_live"] = bool(tty and tty in live_ttys)
         r["_window_open"] = short in open_ids
     return rows
+
+
+class _RowsRefresher:
+    """Refreshes rows on a background thread so the TUI never blocks on IO.
+
+    ``_load_rows()`` calls ``osascript`` / ``ps`` / ``wezterm`` and reads
+    every registry file — on macOS this can take 500ms+ when many apps
+    are open. Running it inline stalled arrow-key navigation. The thread
+    writes into a locked slot; the main loop pulls a snapshot whenever
+    ``version`` advances.
+    """
+
+    def __init__(self, interval: float) -> None:
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._rows: list[dict] = []
+        self._version = 0
+        self._trigger = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self) -> None:
+        # Prime the cache synchronously so the first frame has data.
+        try:
+            self._rows = _load_rows()
+            self._version = 1
+        except Exception:
+            self._rows = []
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._trigger.set()
+
+    def trigger(self) -> None:
+        self._trigger.set()
+
+    def snapshot(self) -> tuple[int, list[dict]]:
+        with self._lock:
+            return self._version, self._rows
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._trigger.wait(self._interval)
+            self._trigger.clear()
+            if self._stop.is_set():
+                break
+            try:
+                rows = _load_rows()
+            except Exception:
+                continue
+            with self._lock:
+                self._rows = rows
+                self._version += 1
 
 
 def _relative_time(iso: str | None) -> str:
@@ -354,26 +409,30 @@ def _tui(stdscr):
         pass
     stdscr.keypad(True)
     # Short tick (200ms) so the focused row's path marquee scrolls smoothly;
-    # data refresh still only runs every REFRESH_SECONDS.
+    # data refresh runs on a background thread — see _RowsRefresher.
     stdscr.timeout(200)
+
+    refresher = _RowsRefresher(REFRESH_SECONDS)
+    refresher.start()
 
     sel = 0
     top = 0
     filt = ""
-    last_refresh = 0.0
-    all_rows: list[dict] = []
-    rows: list[dict] = []
-    force_refresh = True
+    last_version, all_rows = refresher.snapshot()
+    rows = _apply_filter(all_rows, filt)
+    force_refresh = False
     marquee_tick = 0
     last_sel = -1
     PROJECT_COL = 36
 
     while True:
-        now = time.monotonic()
-        if force_refresh or now - last_refresh >= REFRESH_SECONDS:
-            all_rows = _load_rows()
+        version, latest = refresher.snapshot()
+        if version != last_version:
+            all_rows = latest
+            last_version = version
+            force_refresh = True
+        if force_refresh:
             rows = _apply_filter(all_rows, filt)
-            last_refresh = now
             force_refresh = False
             if rows and sel >= len(rows):
                 sel = len(rows) - 1
@@ -487,6 +546,7 @@ def _tui(stdscr):
                     _scanner.scan_once()
                 except Exception:
                     pass
+                refresher.trigger()
                 force_refresh = True
             elif k == "/":
                 new = _prompt(stdscr, "filter", filt)
@@ -513,40 +573,58 @@ def _tui(stdscr):
                     # Focus failed — fall through to resume if still in_progress.
                     if rc != 0 and is_in_progress:
                         _run_csm(stdscr, ["resume", sid])
-                force_refresh = True
+                refresher.trigger()
             elif rows and k == "r":
                 _run_csm(stdscr, ["resume", rows[sel]["session_id"]])
-                force_refresh = True
+                refresher.trigger()
             elif rows and k == "n":
                 new = _prompt(stdscr, "note", rows[sel].get("note") or "")
                 if new is not None:
                     _registry.update(rows[sel]["session_id"], note=new)
-                    force_refresh = True
+                    rows[sel]["note"] = new
+                    refresher.trigger()
             elif rows and k == "p":
                 cur = rows[sel].get("priority") or "medium"
                 nxt = PRIORITY_CYCLE[(PRIORITY_CYCLE.index(cur) + 1) % 3] if cur in PRIORITY_CYCLE else "medium"
                 _registry.update(rows[sel]["session_id"], priority=nxt)
-                force_refresh = True
+                rows[sel]["priority"] = nxt
+                refresher.trigger()
             elif rows and k == "s":
                 cur = rows[sel].get("status") or "in_progress"
                 nxt = STATUS_CYCLE[(STATUS_CYCLE.index(cur) + 1) % 3] if cur in STATUS_CYCLE else "in_progress"
                 _registry.update(rows[sel]["session_id"], status=nxt)
-                force_refresh = True
+                rows[sel]["status"] = nxt
+                refresher.trigger()
             elif rows and k == "d":
                 _registry.update(rows[sel]["session_id"], status="done")
-                force_refresh = True
+                rows[sel]["status"] = "done"
+                refresher.trigger()
             elif rows and k == "a":
+                sid = rows[sel]["session_id"]
                 _registry.update(
-                    rows[sel]["session_id"],
+                    sid,
                     archived=True,
                     archived_at=_registry._utc_now_iso(),
                 )
-                force_refresh = True
+                # Archived rows are hidden — drop locally for instant feedback.
+                try:
+                    all_rows.remove(rows[sel])
+                except ValueError:
+                    pass
+                rows.pop(sel)
+                if sel >= len(rows) and sel > 0:
+                    sel -= 1
+                refresher.trigger()
             elif rows and k in ("x", "X"):
                 if _confirm_delete(stdscr, rows[sel]["session_id"]):
-                    if sel > 0:
+                    try:
+                        all_rows.remove(rows[sel])
+                    except ValueError:
+                        pass
+                    rows.pop(sel)
+                    if sel >= len(rows) and sel > 0:
                         sel -= 1
-                    force_refresh = True
+                    refresher.trigger()
         elif isinstance(k, int):
             if k == curses.KEY_UP and rows and sel > 0:
                 sel -= 1
@@ -562,9 +640,14 @@ def _tui(stdscr):
                 sel = len(rows) - 1
             elif k == curses.KEY_DC and rows:
                 if _confirm_delete(stdscr, rows[sel]["session_id"]):
-                    if sel > 0:
+                    try:
+                        all_rows.remove(rows[sel])
+                    except ValueError:
+                        pass
+                    rows.pop(sel)
+                    if sel >= len(rows) and sel > 0:
                         sel -= 1
-                    force_refresh = True
+                    refresher.trigger()
 
 
 def run(refresh_interval: float = REFRESH_SECONDS) -> int:
