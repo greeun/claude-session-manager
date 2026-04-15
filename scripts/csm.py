@@ -35,7 +35,7 @@ import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
 import platform_macos  # noqa: E402
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 
@@ -256,6 +256,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     threshold = sl_mod._stale_threshold_seconds()
     now = _dt.datetime.now(_dt.timezone.utc)
     live_set = livedot.live_ttys()
+    sid_map = livedot.live_sid_ttys()
 
     recs = registry.sorted_records(include_archived=bool(args.all))
 
@@ -263,7 +264,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     display_rows: list[dict] = []
     for r in recs:
         stale = _is_stale(r, threshold, now)
-        live = livedot.is_live(r, live_set)
+        live = livedot.is_live(r, live_set, sid_map)
         display_rows.append(
             {"rec": r, "stale": stale, "live": live}
         )

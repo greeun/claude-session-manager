@@ -109,29 +109,37 @@ def _terminal_capture() -> dict[str, Any]:
     if tty is None:
         # Claude Code spawns hooks without a controlling TTY, so stdin/
         # stdout/stderr and /dev/tty all fail. Walk up the parent chain
-        # via ps — the `claude` ancestor still has the real tty.
+        # via a single ps snapshot — the `claude` ancestor still has the
+        # real tty. One subprocess call instead of up to 12.
         import subprocess as _sp
-        pid = os.getpid()
-        for _ in range(12):
-            try:
-                r = _sp.run(
-                    ["ps", "-o", "ppid=,tty=", "-p", str(pid)],
-                    capture_output=True, text=True, timeout=2,
-                )
-            except (_sp.SubprocessError, OSError):
-                break
-            parts = (r.stdout or "").split()
-            if len(parts) < 2:
-                break
-            ppid_s, tty_s = parts[0], parts[1]
-            if tty_s and tty_s not in ("?", "??", "-"):
-                tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
-                break
-            if not ppid_s.isdigit():
-                break
-            pid = int(ppid_s)
-            if pid <= 1:
-                break
+        try:
+            r = _sp.run(
+                ["ps", "-A", "-o", "pid=,ppid=,tty="],
+                capture_output=True, text=True, timeout=2,
+            )
+            table: dict[int, tuple[int, str]] = {}
+            for line in (r.stdout or "").splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid_s, ppid_s, tty_s = parts[0], parts[1], parts[2].strip()
+                if not pid_s.isdigit() or not ppid_s.isdigit():
+                    continue
+                table[int(pid_s)] = (int(ppid_s), tty_s)
+            pid = os.getpid()
+            for _ in range(24):
+                entry = table.get(pid)
+                if not entry:
+                    break
+                ppid, tty_s = entry
+                if tty_s and tty_s not in ("?", "??", "-"):
+                    tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
+                    break
+                if ppid <= 1:
+                    break
+                pid = ppid
+        except (_sp.SubprocessError, OSError):
+            pass
     window_id: str | None = None
     extra: dict[str, Any] = {}
     # WezTerm.
@@ -258,10 +266,17 @@ def activity() -> int:
             # minimal record, so we call it then optionally layer in the
             # prompt.
             touch_activity(sid)
-            if truncated:
-                rec = registry_read(sid)
-                if rec is not None:
+            rec = registry_read(sid)
+            if rec is not None:
+                changed = False
+                if truncated:
                     rec["last_user_prompt"] = truncated
+                    changed = True
+                term = _terminal_capture()
+                if term.get("tty"):
+                    rec["terminal"] = term
+                    changed = True
+                if changed:
                     registry_write(rec)
             return 0
 
@@ -272,6 +287,9 @@ def activity() -> int:
         existing["last_activity_at"] = _now_iso()
         if truncated:
             existing["last_user_prompt"] = truncated
+        term = _terminal_capture()
+        if term.get("tty"):
+            existing["terminal"] = term
         registry_write(existing)
         return 0
     except Exception as e:

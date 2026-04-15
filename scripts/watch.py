@@ -46,11 +46,11 @@ def _load_rows() -> list[dict]:
     except Exception:
         return []
     live_ttys = _livedot.live_ttys()
+    sid_map = _livedot.live_sid_ttys()
     open_ids = _windows.open_short_ids()
     for r in rows:
-        tty = (r.get("terminal") or {}).get("tty")
         short = (r.get("session_id") or "")[:8]
-        r["_live"] = bool(tty and tty in live_ttys)
+        r["_live"] = _livedot.is_live(r, live_ttys, sid_map)
         r["_window_open"] = short in open_ids
     return rows
 
