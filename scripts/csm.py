@@ -35,7 +35,7 @@ import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
 import platform_macos  # noqa: E402
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 
@@ -345,6 +345,20 @@ def cmd_done(args: argparse.Namespace) -> int:
     if rec is None:
         sys.stderr.write(f"csm: record disappeared: {sid}\n")
         return 1
+    # Marking done flips auto_detected=False, which locks the scanner
+    # out of refreshing the title. If the title is still empty (hook
+    # created the record but scan hadn't run yet), seed it from the
+    # transcript now so the row isn't blank in `csm watch`.
+    if not (rec.get("title") or "").strip():
+        transcripts = _find_transcripts(sid)
+        if transcripts:
+            title_seed, cwd_seed = scanner._seed_from_jsonl(transcripts[0])
+            if title_seed:
+                rec["title"] = title_seed
+            elif rec.get("project_name"):
+                rec["title"] = rec["project_name"]
+            if cwd_seed and not rec.get("cwd"):
+                rec["cwd"] = cwd_seed
     rec["status"] = "done"
     rec["auto_detected"] = False
     registry.write(rec)
