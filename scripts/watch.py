@@ -312,6 +312,7 @@ def _help_overlay(stdscr) -> None:
         "  n         edit note     p  cycle priority",
         "  s         cycle status  d  mark done",
         "  a         archive       x/Del  DELETE (confirm)",
+        "  R         rescan transcripts (pick up new sessions/titles)",
         "  /         filter",
         "  ?         this help     q/Esc quit",
         "",
@@ -384,7 +385,7 @@ def _tui(stdscr):
         filt_hint = f"  filter: {filt!r}" if filt else ""
         header = (
             f" csm v{_csm.__version__}  {len(rows)}/{len(all_rows)}{filt_hint}   "
-            "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  x=delete  /=filter  ?=help  q=quit "
+            "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  x=delete  R=rescan  /=filter  ?=help  q=quit "
         )
         _safe_addnstr(stdscr, 0, 0, header.ljust(w), w, curses.color_pair(2) | curses.A_BOLD)
 
@@ -479,6 +480,13 @@ def _tui(stdscr):
                 return
             if k == "?":
                 _help_overlay(stdscr)
+                force_refresh = True
+            elif k in ("R",):
+                try:
+                    import scanner as _scanner
+                    _scanner.scan_once()
+                except Exception:
+                    pass
                 force_refresh = True
             elif k == "/":
                 new = _prompt(stdscr, "filter", filt)
