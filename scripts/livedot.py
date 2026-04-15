@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import subprocess
 from typing import Iterable
+
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
 
 
 def _scanner_log_path():
@@ -35,6 +41,19 @@ def _run_ps() -> str:
     """Return ``ps`` stdout as text. Raise on any failure."""
     r = subprocess.run(
         ["ps", "-o", "pid,tty,comm", "-A"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"ps exited {r.returncode}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def _run_ps_full() -> str:
+    """Return ``ps`` stdout including full command args. Raise on failure."""
+    r = subprocess.run(
+        ["ps", "-o", "pid,tty,command", "-A"],
         capture_output=True,
         text=True,
         timeout=5,
@@ -104,8 +123,55 @@ def live_ttys() -> set[str]:
         return set()
 
 
-def is_live(record: dict, live_set: Iterable[str]) -> bool:
-    """Return True when ``record['terminal']['tty']`` is in ``live_set``."""
+def live_sid_ttys() -> dict[str, str]:
+    """Map session_id → tty by scanning ``claude --resume <sid>`` argv.
+
+    Returns ``{}`` on failure. Only covers resumed sessions (freshly
+    started ``claude`` has no sid in argv — those still rely on the
+    stored ``terminal.tty`` captured at SessionStart).
+    """
+    try:
+        out = _run_ps_full()
+    except (subprocess.SubprocessError, FileNotFoundError, OSError, RuntimeError) as e:
+        _log_warning(f"ps full failed ({e.__class__.__name__}: {e})")
+        return {}
+    mapping: dict[str, str] = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, tty, cmd = parts[0], parts[1], parts[2]
+        if not pid.isdigit():
+            continue
+        norm = _normalize_tty(tty)
+        if norm is None:
+            continue
+        argv0 = cmd.split(None, 1)[0]
+        if os.path.basename(argv0) != "claude":
+            continue
+        m = _UUID_RE.search(cmd)
+        if m:
+            mapping[m.group(0).lower()] = norm
+    return mapping
+
+
+def is_live(
+    record: dict,
+    live_set: Iterable[str],
+    sid_map: dict[str, str] | None = None,
+) -> bool:
+    """Return True when the record's session is actively hosted by claude.
+
+    Preference order:
+    1. ``sid_map[session_id]`` — tty discovered from ``claude --resume``
+       argv (authoritative; survives window changes).
+    2. ``record['terminal']['tty']`` in ``live_set`` — fallback for
+       freshly started sessions with no sid in argv.
+    """
+    if sid_map:
+        sid = record.get("session_id")
+        if sid and sid.lower() in sid_map:
+            return True
     term = record.get("terminal") or {}
     tty = term.get("tty")
     if not tty:
