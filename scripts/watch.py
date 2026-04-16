@@ -339,7 +339,6 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
 
     Layout::
 
-        ✱ Title
         S first prompt
         E last prompt (up to 2 lines)
         ◷ 2026-04-14  │  ✔ 2026-04-16
@@ -347,14 +346,9 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
     inner = max(10, width - 4)  # 2 border + 1 padding each side
     lines: list[str] = []
 
-    # Line 1: title
-    title = (rec.get("title") or "").strip().replace("\n", " ")
-    if title:
-        lines.append(_truncate(f"\u2731 {title}", inner))  # ✱
-
-    # Line 2: first prompt (skip only if exactly equal to title)
+    # Line 1: first prompt (always shown)
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
-    if fp and fp != title:
+    if fp:
         lines.append(_truncate(f"S {fp}", inner))
 
     # Lines 3-4: last prompt (up to 2 lines)
