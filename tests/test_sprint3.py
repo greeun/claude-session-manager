@@ -130,8 +130,9 @@ def test_tooltip_content_returns_formatted_lines():
     lines = watch._tooltip_lines(r, width=60)
     assert any("2026-04-14" in l for l in lines), "created_at date missing"
     assert any("2026-04-16" in l for l in lines), "done_at date missing"
-    assert any("Fix auth bug" in l for l in lines), "title missing"
+    assert any(l.startswith("S ") for l in lines), "S line missing"
     assert any("login page auth" in l for l in lines), "first_user_prompt missing"
+    assert any(l.startswith("E ") for l in lines), "E line missing"
     assert any("expired tokens" in l for l in lines), "last_user_prompt missing"
 
 
