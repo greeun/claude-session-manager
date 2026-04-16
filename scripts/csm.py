@@ -35,7 +35,7 @@ import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
 import platform_macos  # noqa: E402
 
-__version__ = "0.3.7"
+__version__ = "0.4.0"
 
 ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 
