@@ -75,12 +75,10 @@ class _RowsRefresher:
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self) -> None:
-        # Prime the cache synchronously so the first frame has data.
-        try:
-            self._rows = _load_rows()
-            self._version = 1
-        except Exception:
-            self._rows = []
+        # Start the background thread immediately — first frame renders
+        # an empty list and updates once _load_rows() completes.
+        # This avoids a multi-second block from osascript/ps on startup.
+        self._trigger.set()
         self._thread.start()
 
     def stop(self) -> None:
