@@ -599,6 +599,29 @@ def test_scan_extracts_first_user_prompt(tmp_path, monkeypatch):
     assert rec["first_user_prompt"] == "first prompt here"
 
 
+def test_last_user_prompt_skips_terminal_commands(tmp_path, monkeypatch):
+    """Scanner skips /done, exit, etc. for last_user_prompt."""
+    import registry, scanner
+    proj = tmp_path / "projects" / "-tmp-proj"
+    proj.mkdir(parents=True)
+    monkeypatch.setenv("CST_PROJECTS_DIR", str(tmp_path / "projects"))
+
+    sid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    jf = proj / f"{sid}.jsonl"
+    import json
+    lines = [
+        json.dumps({"type": "user", "message": {"content": "real question here"}}),
+        json.dumps({"type": "assistant", "message": {"content": "reply"}}),
+        json.dumps({"type": "user", "message": {"content": "/done"}}),
+        json.dumps({"type": "user", "message": {"content": "exit"}}),
+    ]
+    jf.write_text("\n".join(lines) + "\n")
+
+    scanner.scan_once()
+    rec = registry.read(sid)
+    assert rec["last_user_prompt"] == "real question here"
+
+
 def test_last_user_prompt_truncates_at_200(tmp_path, monkeypatch):
     import registry, scanner
     proj = tmp_path / "projects" / "-tmp-proj"

@@ -57,6 +57,18 @@ def _log_scanner_error(msg: str) -> None:
         pass
 
 
+_TERMINAL_COMMANDS = frozenset({
+    "/done", "done", "/exit", "exit", "/quit", "quit",
+    "/clear", "/help", "/compact", "/fast",
+})
+
+
+def _is_terminal_command(text: str) -> bool:
+    """Return True if text is a slash command or session-ending keyword."""
+    first = text.strip().splitlines()[0].strip().lower() if text else ""
+    return first in _TERMINAL_COMMANDS or first.startswith("<command-")
+
+
 def _truncate(text: str) -> str:
     """Truncate on code-point boundaries; append single '…' when shortened.
 
@@ -197,14 +209,15 @@ def _extract_progress(
     current_task_hint = ""
 
     try:
-        # Most recent user line in the tail.
+        # Most recent user line in the tail, skipping terminal commands
+        # like /done, exit, /exit that carry no meaningful context.
         for row in reversed(tail):
             if row.get("type") != "user":
                 continue
             msg = row.get("message")
             content = msg.get("content") if isinstance(msg, dict) else row.get("content")
             text = _extract_text(content) or ""
-            if text:
+            if text and not _is_terminal_command(text):
                 last_user_prompt = _truncate(text)
                 break
 
