@@ -153,3 +153,26 @@ def test_sort_priority_and_recency():
     ordered = registry.sorted_records()
     titles = [x["title"] for x in ordered]
     assert titles == ["H-recent", "H-old", "M-recent", "L-newest"]
+
+
+def test_update_status_done_sets_done_at():
+    import registry
+    sid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    rec = registry.new_record(sid)
+    registry.write(rec)
+    assert rec.get("done_at") is None
+
+    updated = registry.update(sid, status="done")
+    assert updated["done_at"] is not None
+    assert updated["done_at"].endswith("Z")
+
+
+def test_update_status_not_done_clears_done_at():
+    import registry
+    sid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    rec = registry.new_record(sid)
+    registry.write(rec)
+    registry.update(sid, status="done")
+
+    updated = registry.update(sid, status="in_progress")
+    assert updated["done_at"] is None

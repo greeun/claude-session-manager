@@ -576,6 +576,29 @@ def test_scanner_does_not_regress_hook_written_prompt(projects_dir):
     assert registry.read(SID_1)["last_user_prompt"] == "fresh hook prompt"
 
 
+def test_scan_extracts_first_user_prompt(tmp_path, monkeypatch):
+    """Scanner populates first_user_prompt from the first user line."""
+    import registry, scanner
+    proj = tmp_path / "projects" / "-tmp-proj"
+    proj.mkdir(parents=True)
+    monkeypatch.setenv("CST_PROJECTS_DIR", str(tmp_path / "projects"))
+
+    sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    jf = proj / f"{sid}.jsonl"
+    import json
+    lines = [
+        json.dumps({"type": "user", "message": {"content": "first prompt here"}}),
+        json.dumps({"type": "assistant", "message": {"content": "reply"}}),
+        json.dumps({"type": "user", "message": {"content": "second prompt"}}),
+    ]
+    jf.write_text("\n".join(lines) + "\n")
+
+    scanner.scan_once()
+    rec = registry.read(sid)
+    assert rec is not None
+    assert rec["first_user_prompt"] == "first prompt here"
+
+
 def test_scanner_overwrites_prompt_when_jsonl_is_newer(projects_dir):
     proj = projects_dir / "-tmp-newer"
     jf = proj / f"{SID_1}.jsonl"
