@@ -513,6 +513,7 @@ def _tui(stdscr):
     rows = _apply_filter(all_rows, filt)
     force_refresh = False
     marquee_tick = 0
+    frame_count = 0       # monotonic tick for loading spinner
     last_sel = -1
     dwell_ticks = 0
     TOOLTIP_TICKS = 3     # show after 3 ticks = 0.6s
@@ -539,15 +540,21 @@ def _tui(stdscr):
             marquee_tick += 1
             dwell_ticks += 1
 
+        loading = last_version == 0
+
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
         import csm as _csm
-        filt_hint = f"  filter: {filt!r}" if filt else ""
-        header = (
-            f" csm v{_csm.__version__}  {len(rows)}/{len(all_rows)}{filt_hint}   "
-            "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  x=delete  R=rescan  /=filter  ?=help  q=quit "
-        )
+        if loading:
+            spinner = "\u280b\u2819\u2838\u2830\u2826\u2807"[frame_count % 6]  # ⠋⠙⠸⠰⠦⠇
+            header = f" csm v{_csm.__version__}  {spinner} loading sessions... "
+        else:
+            filt_hint = f"  filter: {filt!r}" if filt else ""
+            header = (
+                f" csm v{_csm.__version__}  {len(rows)}/{len(all_rows)}{filt_hint}   "
+                "↑↓ Enter=focus  r=resume  n=note  p=pri  s=status  d=done  a=archive  x=delete  R=rescan  /=filter  ?=help  q=quit "
+            )
         _safe_addnstr(stdscr, 0, 0, header.ljust(w), w, curses.color_pair(2) | curses.A_BOLD)
 
         col_hdr = (
@@ -630,6 +637,8 @@ def _tui(stdscr):
             row_screen_y = list_top + (sel - top)
             if 0 <= row_screen_y < h:
                 _draw_tooltip(stdscr, row_screen_y, rows[sel])
+
+        frame_count += 1
 
         try:
             k = stdscr.get_wch()
