@@ -338,31 +338,37 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
     """Build tooltip content lines for a session record.
 
     Returns a list of strings (no trailing newlines), each fitting
-    within ``width`` cells.
+    within ``width`` cells.  Each field is prefixed with a short icon
+    label so the user can tell what they are looking at:
+
+        \u2731 Title
+        \u25f7 Created  |  \u2714 Done
+        \u25b6 First prompt
+        \u2937 Last prompt (up to 2 lines)
     """
     inner = max(10, width - 4)  # 2 border + 1 padding each side
     lines: list[str] = []
 
-    # Line 1: dates
+    # Line 1: title
+    title = (rec.get("title") or "").strip().replace("\n", " ")
+    if title:
+        lines.append(_truncate(f"\u2731 {title}", inner))  # ✱
+
+    # Line 2: dates
     created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
     done_at = rec.get("done_at")
     if done_at:
-        date_line = f"Created: {created}  |  Done: {done_at[:10]}"
+        date_line = f"\u25f7 {created}  \u2502  \u2714 {done_at[:10]}"  # ◷ … │ … ✔
     else:
-        date_line = f"Created: {created}"
+        date_line = f"\u25f7 {created}"  # ◷
     lines.append(_truncate(date_line, inner))
-
-    # Line 2: title
-    title = (rec.get("title") or "").strip().replace("\n", " ")
-    if title:
-        lines.append(_truncate(title, inner))
 
     # Line 3: first prompt
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
     if fp:
         lines.append(_truncate(f"\u25b6 {fp}", inner))  # ▶
 
-    # Lines 4-5: last prompt (up to 2 lines, word-wrapped)
+    # Lines 4-5: last prompt (up to 2 lines)
     lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
     if lup:
         label = "\u2937 "  # ⤷
@@ -370,7 +376,6 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
         if _cell_width(lup) <= max_chars:
             lines.append(f"{label}{lup}")
         else:
-            # Split at cell-width boundary for first line
             from unicodedata import east_asian_width
             cut = len(lup)
             used = 0
