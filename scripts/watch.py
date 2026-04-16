@@ -334,6 +334,90 @@ def _apply_filter(rows: list[dict], q: str) -> list[dict]:
     return out
 
 
+def _tooltip_lines(rec: dict, width: int) -> list[str]:
+    """Build tooltip content lines for a session record.
+
+    Returns a list of strings (no trailing newlines), each fitting
+    within ``width`` cells.
+    """
+    inner = max(10, width - 4)  # 2 border + 1 padding each side
+    lines: list[str] = []
+
+    # Line 1: dates
+    created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
+    done_at = rec.get("done_at")
+    if done_at:
+        date_line = f"Created: {created}  |  Done: {done_at[:10]}"
+    else:
+        date_line = f"Created: {created}"
+    lines.append(_truncate(date_line, inner))
+
+    # Line 2: title
+    title = (rec.get("title") or "").strip().replace("\n", " ")
+    if title:
+        lines.append(_truncate(title, inner))
+
+    # Line 3: first prompt
+    fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
+    if fp:
+        lines.append(_truncate(f"\u25b6 {fp}", inner))  # ▶
+
+    # Lines 4-5: last prompt (up to 2 lines, word-wrapped)
+    lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
+    if lup:
+        label = "\u2937 "  # ⤷
+        max_chars = inner - len(label)
+        if _cell_width(lup) <= max_chars:
+            lines.append(f"{label}{lup}")
+        else:
+            # Split at cell-width boundary for first line
+            from unicodedata import east_asian_width
+            cut = len(lup)
+            used = 0
+            for ci, ch in enumerate(lup):
+                cw = 2 if east_asian_width(ch) in ("W", "F") else 1
+                if used + cw > max_chars:
+                    cut = ci
+                    break
+                used += cw
+            lines.append(_truncate(f"{label}{lup[:cut]}", inner))
+            lines.append(_truncate(f"  {lup[cut:]}", inner))
+
+    return lines
+
+
+def _draw_tooltip(stdscr, row_y: int, rec: dict) -> None:
+    """Draw a tooltip overlay just below row_y for the given record."""
+    import curses
+    h, w = stdscr.getmaxyx()
+    box_w = min(64, w - 4)
+    lines = _tooltip_lines(rec, box_w)
+    if not lines:
+        return
+    box_h = len(lines) + 2  # +2 for top/bottom border
+
+    # Position: prefer below the row; if not enough space, place above.
+    y0 = row_y + 1
+    if y0 + box_h > h:
+        y0 = max(0, row_y - box_h)
+    if y0 + box_h > h:
+        return  # Terminal too small
+
+    x0 = 2
+    if x0 + box_w > w:
+        x0 = max(0, w - box_w)
+
+    try:
+        win = curses.newwin(box_h, box_w, y0, x0)
+        win.bkgd(" ", curses.color_pair(1))
+        win.box()
+        for i, line in enumerate(lines):
+            _safe_addnstr(win, 1 + i, 2, line, box_w - 4, curses.A_BOLD if i == 0 else 0)
+        win.refresh()
+    except curses.error:
+        pass
+
+
 def _confirm_delete(stdscr, sid: str) -> bool:
     """Prompt y/n and delete registry record + transcript. Returns True."""
     import registry as _registry
@@ -372,6 +456,8 @@ def _help_overlay(stdscr) -> None:
         "  ?         this help     q/Esc quit",
         "",
         "  Dot: ● live claude proc  ◉ window open  ○ window closed",
+        "",
+        "  Tooltip auto-appears after ~0.6s on a row.",
         "",
         "  Press any key to close.",
     ]
@@ -423,6 +509,9 @@ def _tui(stdscr):
     force_refresh = False
     marquee_tick = 0
     last_sel = -1
+    dwell_ticks = 0
+    TOOLTIP_TICKS = 3     # show after 3 ticks = 0.6s
+    tooltip_shown = False
     PROJECT_COL = 36
 
     while True:
@@ -521,13 +610,23 @@ def _tui(stdscr):
 
         stdscr.refresh()
 
+        # Tooltip overlay: show after dwelling on a row for TOOLTIP_TICKS.
+        if rows and 0 <= sel < len(rows) and dwell_ticks >= TOOLTIP_TICKS:
+            row_screen_y = list_top + (sel - top)
+            if 0 <= row_screen_y < h:
+                _draw_tooltip(stdscr, row_screen_y, rows[sel])
+                tooltip_shown = True
+
         # Marquee tick: reset when selection changes so the focused path
         # always starts from the beginning; advance otherwise.
         if sel != last_sel:
             marquee_tick = 0
             last_sel = sel
+            dwell_ticks = 0
+            tooltip_shown = False
         else:
             marquee_tick += 1
+            dwell_ticks += 1
 
         try:
             k = stdscr.get_wch()

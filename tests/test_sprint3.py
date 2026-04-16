@@ -114,6 +114,44 @@ def test_install_symlinks_slash_commands(tmp_path, monkeypatch):
     assert EXPECTED_COMMANDS <= linked
 
 
+# --- tooltip content ------------------------------------------------------ #
+
+def test_tooltip_content_returns_formatted_lines():
+    import watch, registry
+    sid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    r = registry.new_record(session_id=sid)
+    r["title"] = "Fix auth bug"
+    r["created_at"] = "2026-04-14T15:03:27.041923Z"
+    r["done_at"] = "2026-04-16T10:30:00.000000Z"
+    r["first_user_prompt"] = "Please fix the login page auth"
+    r["last_user_prompt"] = "Now handle the edge case for expired tokens"
+    registry.write(r)
+
+    lines = watch._tooltip_lines(r, width=60)
+    assert any("2026-04-14" in l for l in lines), "created_at date missing"
+    assert any("2026-04-16" in l for l in lines), "done_at date missing"
+    assert any("Fix auth bug" in l for l in lines), "title missing"
+    assert any("login page auth" in l for l in lines), "first_user_prompt missing"
+    assert any("expired tokens" in l for l in lines), "last_user_prompt missing"
+
+
+def test_tooltip_content_omits_done_when_none():
+    import watch, registry
+    sid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    r = registry.new_record(session_id=sid)
+    r["title"] = "WIP task"
+    r["created_at"] = "2026-04-14T15:03:27.041923Z"
+    r["first_user_prompt"] = "start working"
+    r["last_user_prompt"] = "continue"
+    registry.write(r)
+
+    lines = watch._tooltip_lines(r, width=60)
+    assert any("2026-04-14" in l for l in lines)
+    assert not any("Done" in l for l in lines)
+
+
+# --- installer symlinks commands ------------------------------------------ #
+
 def test_install_preserves_existing_command_file(tmp_path):
     # A user's unrelated /tasks regular file should not be clobbered.
     cmd_dir = tmp_path / ".claude" / "commands"
