@@ -35,7 +35,7 @@ import focus as focus_mod  # noqa: E402
 import resume as resume_mod  # noqa: E402
 import platform_macos  # noqa: E402
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 ACTIVE_STATUSES = {"in_progress", "blocked", "waiting"}
 
@@ -118,26 +118,72 @@ def _resolve_id_or_exit(prefix: str) -> str:
     return resolver.resolve_or_exit(prefix)
 
 
+def _normalize_cwd(p: str) -> str:
+    """Canonicalize a cwd for comparison.
+
+    Resolves symlinks where possible and strips a trailing slash so
+    ``/a/b`` and ``/a/b/`` compare equal. On any OS error (path no
+    longer exists, permission denied) we fall back to ``normpath``.
+    """
+    if not p:
+        return ""
+    try:
+        return os.path.realpath(p)
+    except OSError:
+        return os.path.normpath(p).rstrip("/") or p
+
+
 def _current_session_id() -> str | None:
     """Best-effort: the Claude Code session active in this shell.
 
     Strategy:
-      1. $CLAUDE_SESSION_ID (set by some Claude Code contexts).
-      2. Most-recently-active session whose cwd equals $PWD.
+      1. ``$CLAUDE_SESSION_ID`` (set by some Claude Code contexts).
+      2. Most-recently-active non-archived session whose normalized
+         ``cwd`` equals ``$PWD`` (symlinks resolved on both sides).
+      3. Fallback — ancestor match. If the registered ``cwd`` is an
+         ancestor of ``$PWD`` (e.g. Claude ``cd``'d into a subdir) or
+         vice versa, the deepest matching path wins; ties break on
+         most-recent ``last_activity_at``.
+
+    The fallback is what saves ``/done`` when Claude's bash tool is
+    invoked from a subdirectory of the directory Claude was launched
+    in, or when path encoding differs between the scanner's source
+    and ``$PWD`` (symlinked skills directories, for example).
     """
     env_sid = os.environ.get("CLAUDE_SESSION_ID")
     if env_sid:
         return env_sid
-    pwd = os.environ.get("PWD") or os.getcwd()
-    best = None
-    best_ts = ""
+    pwd_raw = os.environ.get("PWD") or os.getcwd()
+    pwd = _normalize_cwd(pwd_raw)
+    if not pwd:
+        return None
+
+    exact_best = None
+    exact_best_ts = ""
+    anc_best = None
+    anc_best_ts = ""
+    anc_best_depth = -1
+
     for r in registry.iter_records():
-        if (r.get("cwd") or "") != pwd or r.get("archived"):
+        if r.get("archived"):
+            continue
+        rec_cwd = _normalize_cwd(r.get("cwd") or "")
+        if not rec_cwd:
             continue
         ts = r.get("last_activity_at") or ""
-        if ts > best_ts:
-            best_ts = ts
-            best = r
+        if rec_cwd == pwd:
+            if ts > exact_best_ts:
+                exact_best_ts = ts
+                exact_best = r
+            continue
+        if pwd.startswith(rec_cwd + os.sep) or rec_cwd.startswith(pwd + os.sep):
+            depth = len(rec_cwd)
+            if depth > anc_best_depth or (depth == anc_best_depth and ts > anc_best_ts):
+                anc_best_depth = depth
+                anc_best_ts = ts
+                anc_best = r
+
+    best = exact_best or anc_best
     return best.get("session_id") if best else None
 
 
@@ -353,7 +399,7 @@ def cmd_done(args: argparse.Namespace) -> int:
     if not (rec.get("title") or "").strip():
         transcripts = _find_transcripts(sid)
         if transcripts:
-            title_seed, cwd_seed = scanner._seed_from_jsonl(transcripts[0])
+            title_seed, cwd_seed, _ = scanner._seed_from_jsonl(transcripts[0])
             if title_seed:
                 rec["title"] = title_seed
             elif rec.get("project_name"):
