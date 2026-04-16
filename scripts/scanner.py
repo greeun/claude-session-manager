@@ -31,7 +31,7 @@ from registry import (
 )
 
 _TAIL_WINDOW_LINES = 50
-_TRUNC_LIMIT = 100  # Including the trailing "…" when truncated.
+_TRUNC_LIMIT = 200  # Including the trailing "…" when truncated.
 _ELLIPSIS = "\u2026"
 
 # Tool categorisation for current_task_hint.
