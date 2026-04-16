@@ -501,6 +501,13 @@ def _tui(stdscr):
     refresher = _RowsRefresher(REFRESH_SECONDS)
     refresher.start()
 
+    # Backfill first_user_prompt for existing records on first launch.
+    try:
+        import scanner as _scanner
+        _scanner.scan_once()
+    except Exception:
+        pass
+
     sel = 0
     top = 0
     filt = ""
@@ -511,7 +518,6 @@ def _tui(stdscr):
     last_sel = -1
     dwell_ticks = 0
     TOOLTIP_TICKS = 3     # show after 3 ticks = 0.6s
-    tooltip_shown = False
     PROJECT_COL = 36
 
     while True:
@@ -525,6 +531,15 @@ def _tui(stdscr):
             force_refresh = False
             if rows and sel >= len(rows):
                 sel = len(rows) - 1
+
+        # Track dwell time BEFORE rendering so tooltip state is current.
+        if sel != last_sel:
+            marquee_tick = 0
+            last_sel = sel
+            dwell_ticks = 0
+        else:
+            marquee_tick += 1
+            dwell_ticks += 1
 
         stdscr.erase()
         h, w = stdscr.getmaxyx()
@@ -610,23 +625,13 @@ def _tui(stdscr):
 
         stdscr.refresh()
 
-        # Tooltip overlay: show after dwelling on a row for TOOLTIP_TICKS.
+        # Tooltip overlay: draw AFTER stdscr.refresh() so the overlay
+        # window sits on top. curses.newwin creates an independent
+        # window whose refresh() is separate from stdscr.
         if rows and 0 <= sel < len(rows) and dwell_ticks >= TOOLTIP_TICKS:
             row_screen_y = list_top + (sel - top)
             if 0 <= row_screen_y < h:
                 _draw_tooltip(stdscr, row_screen_y, rows[sel])
-                tooltip_shown = True
-
-        # Marquee tick: reset when selection changes so the focused path
-        # always starts from the beginning; advance otherwise.
-        if sel != last_sel:
-            marquee_tick = 0
-            last_sel = sel
-            dwell_ticks = 0
-            tooltip_shown = False
-        else:
-            marquee_tick += 1
-            dwell_ticks += 1
 
         try:
             k = stdscr.get_wch()
