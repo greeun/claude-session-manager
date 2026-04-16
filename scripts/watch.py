@@ -363,9 +363,10 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
         date_line = f"\u25f7 {created}"  # ◷
     lines.append(_truncate(date_line, inner))
 
-    # Line 3: first prompt
+    # Line 3: first prompt (skip if redundant with title — title is
+    # auto-seeded from the same text truncated to 60 chars)
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
-    if fp:
+    if fp and not fp.startswith(title):
         lines.append(_truncate(f"\u25b6 {fp}", inner))  # ▶
 
     # Lines 4-5: last prompt (up to 2 lines)
