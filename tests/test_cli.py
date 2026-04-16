@@ -33,7 +33,7 @@ def test_list_empty_exits_zero():
 def test_version_flag():
     r = _run(["--version"])
     assert r.returncode == 0
-    assert r.stdout.strip() == "csm 0.4.0"
+    assert r.stdout.strip() == "csm 0.4.1"
 
 
 def test_set_then_list():
