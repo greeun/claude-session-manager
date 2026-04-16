@@ -337,14 +337,12 @@ def _apply_filter(rows: list[dict], q: str) -> list[dict]:
 def _tooltip_lines(rec: dict, width: int) -> list[str]:
     """Build tooltip content lines for a session record.
 
-    Returns a list of strings (no trailing newlines), each fitting
-    within ``width`` cells.  Each field is prefixed with a short icon
-    label so the user can tell what they are looking at:
+    Layout::
 
-        \u2731 Title
-        \u25f7 Created  |  \u2714 Done
-        \u25b6 First prompt
-        \u2937 Last prompt (up to 2 lines)
+        ✱ Title
+        S first prompt
+        E last prompt (up to 2 lines)
+        ◷ 2026-04-14  │  ✔ 2026-04-16
     """
     inner = max(10, width - 4)  # 2 border + 1 padding each side
     lines: list[str] = []
@@ -354,25 +352,15 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
     if title:
         lines.append(_truncate(f"\u2731 {title}", inner))  # ✱
 
-    # Line 2: dates
-    created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
-    done_at = rec.get("done_at")
-    if done_at:
-        date_line = f"\u25f7 {created}  \u2502  \u2714 {done_at[:10]}"  # ◷ … │ … ✔
-    else:
-        date_line = f"\u25f7 {created}"  # ◷
-    lines.append(_truncate(date_line, inner))
-
-    # Line 3: first prompt (skip if redundant with title — title is
-    # auto-seeded from the same text truncated to 60 chars)
+    # Line 2: first prompt (skip if redundant with title)
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
     if fp and not fp.startswith(title):
-        lines.append(_truncate(f"\u25b6 {fp}", inner))  # ▶
+        lines.append(_truncate(f"S {fp}", inner))
 
-    # Lines 4-5: last prompt (up to 2 lines)
+    # Lines 3-4: last prompt (up to 2 lines)
     lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
     if lup:
-        label = "\u2937 "  # ⤷
+        label = "E "
         max_chars = inner - len(label)
         if _cell_width(lup) <= max_chars:
             lines.append(f"{label}{lup}")
@@ -388,6 +376,15 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
                 used += cw
             lines.append(_truncate(f"{label}{lup[:cut]}", inner))
             lines.append(_truncate(f"  {lup[cut:]}", inner))
+
+    # Last line: dates
+    created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
+    done_at = rec.get("done_at")
+    if done_at:
+        date_line = f"\u25f7 {created}  \u2502  \u2714 {done_at[:10]}"  # ◷ … │ … ✔
+    else:
+        date_line = f"\u25f7 {created}"  # ◷
+    lines.append(_truncate(date_line, inner))
 
     return lines
 
