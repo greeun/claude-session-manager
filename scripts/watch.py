@@ -506,12 +506,17 @@ def _tui(stdscr):
     refresher = _RowsRefresher(REFRESH_SECONDS)
     refresher.start()
 
-    # Backfill first_user_prompt for existing records on first launch.
-    try:
-        import scanner as _scanner
-        _scanner.scan_once()
-    except Exception:
-        pass
+    # Backfill first_user_prompt for existing records without blocking
+    # the TUI — run scan_once() in a daemon thread and trigger a
+    # refresher update when it finishes.
+    def _backfill():
+        try:
+            import scanner as _scanner
+            _scanner.scan_once()
+            refresher.trigger()
+        except Exception:
+            pass
+    threading.Thread(target=_backfill, daemon=True).start()
 
     sel = 0
     top = 0
