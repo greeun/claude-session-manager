@@ -368,7 +368,7 @@ def test_current_task_hint_basename_when_file_outside_cwd(projects_dir):
     assert registry.read(SID_1)["current_task_hint"] == "Editing: x.py"
 
 
-def test_truncation_100_chars_with_single_ellipsis(projects_dir):
+def test_truncation_200_chars_with_single_ellipsis(projects_dir):
     proj = projects_dir / "-tmp-foo"
     big = "X" * 500
     _write_jsonl(
@@ -377,7 +377,7 @@ def test_truncation_100_chars_with_single_ellipsis(projects_dir):
     )
     scanner.scan_once()
     p = registry.read(SID_1)["last_user_prompt"]
-    assert len(p) == 100
+    assert len(p) == 200
     assert p.endswith("\u2026")
     assert p.count("\u2026") == 1
 
@@ -391,9 +391,9 @@ def test_truncation_is_code_point_aware_for_cjk(projects_dir):
     )
     scanner.scan_once()
     p = registry.read(SID_1)["last_user_prompt"]
-    assert len(p) == 100
+    assert len(p) == 200
     assert p.endswith("\u2026")
-    assert all(c == "한" for c in p[:99])
+    assert all(c == "한" for c in p[:199])
 
 
 def test_non_utf8_bytes_do_not_crash(projects_dir):
@@ -597,6 +597,25 @@ def test_scan_extracts_first_user_prompt(tmp_path, monkeypatch):
     rec = registry.read(sid)
     assert rec is not None
     assert rec["first_user_prompt"] == "first prompt here"
+
+
+def test_last_user_prompt_truncates_at_200(tmp_path, monkeypatch):
+    import registry, scanner
+    proj = tmp_path / "projects" / "-tmp-proj"
+    proj.mkdir(parents=True)
+    monkeypatch.setenv("CST_PROJECTS_DIR", str(tmp_path / "projects"))
+
+    sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    jf = proj / f"{sid}.jsonl"
+    import json
+    long_prompt = "x" * 250
+    jf.write_text(json.dumps({"type": "user", "message": {"content": long_prompt}}) + "\n")
+
+    scanner.scan_once()
+    rec = registry.read(sid)
+    # 199 chars + ellipsis = 200
+    assert len(rec["last_user_prompt"]) == 200
+    assert rec["last_user_prompt"].endswith("\u2026")
 
 
 def test_scanner_overwrites_prompt_when_jsonl_is_newer(projects_dir):
