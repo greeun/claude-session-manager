@@ -352,9 +352,9 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
     if title:
         lines.append(_truncate(f"\u2731 {title}", inner))  # ✱
 
-    # Line 2: first prompt (skip if redundant with title)
+    # Line 2: first prompt (skip only if exactly equal to title)
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
-    if fp and not fp.startswith(title):
+    if fp and fp != title:
         lines.append(_truncate(f"S {fp}", inner))
 
     # Lines 3-4: last prompt (up to 2 lines)
