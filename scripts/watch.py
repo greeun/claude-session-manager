@@ -351,25 +351,23 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
     if fp:
         lines.append(_truncate(f"S {fp}", inner))
 
-    # Lines 3-4: last prompt (up to 2 lines)
+    # Last prompt: always 2 lines (E line + continuation)
     lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
     if lup:
         label = "E "
         max_chars = inner - len(label)
-        if _cell_width(lup) <= max_chars:
-            lines.append(f"{label}{lup}")
-        else:
-            from unicodedata import east_asian_width
-            cut = len(lup)
-            used = 0
-            for ci, ch in enumerate(lup):
-                cw = 2 if east_asian_width(ch) in ("W", "F") else 1
-                if used + cw > max_chars:
-                    cut = ci
-                    break
-                used += cw
-            lines.append(_truncate(f"{label}{lup[:cut]}", inner))
-            lines.append(_truncate(f"  {lup[cut:]}", inner))
+        from unicodedata import east_asian_width
+        cut = len(lup)
+        used = 0
+        for ci, ch in enumerate(lup):
+            cw = 2 if east_asian_width(ch) in ("W", "F") else 1
+            if used + cw > max_chars:
+                cut = ci
+                break
+            used += cw
+        lines.append(_truncate(f"{label}{lup[:cut]}", inner))
+        rest = lup[cut:]
+        lines.append(_truncate(f"  {rest}", inner) if rest else "")
 
     # Last line: dates
     created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
