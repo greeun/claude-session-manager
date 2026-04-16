@@ -33,7 +33,7 @@ def test_list_empty_exits_zero():
 def test_version_flag():
     r = _run(["--version"])
     assert r.returncode == 0
-    assert r.stdout.strip() == "csm 0.4.2"
+    assert r.stdout.strip() == "csm 0.4.3"
 
 
 def test_set_then_list():
@@ -381,3 +381,153 @@ def test_statusline_empty_registry_prints_empty_line():
     assert r.returncode == 0
     assert r.stdout.strip() == ""  # only a newline
     assert "/tasks" not in r.stdout   # no arrow when zero pending
+
+
+# --------------------------------------------------------------------------- #
+# csm current — session resolution for the /done slash command and friends
+# --------------------------------------------------------------------------- #
+
+
+def _run_current(env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    """Run `csm current` with CLAUDE_SESSION_ID stripped unless explicitly set."""
+    env = os.environ.copy()
+    env.pop("CLAUDE_SESSION_ID", None)
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
+        [sys.executable, str(CST_PY), "current"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _seed(sid: str, cwd: str, ts: str = "2025-01-01T00:00:00Z", archived: bool = False):
+    rec = registry.new_record(sid, title=f"t-{sid[:4]}")
+    rec["cwd"] = cwd
+    rec["last_activity_at"] = ts
+    if archived:
+        rec["archived"] = True
+    registry.write(rec)
+
+
+def test_current_prefers_env_var_over_cwd_matching(tmp_path):
+    sid_env = "cccccccc-1111-1111-1111-111111111111"
+    sid_pwd = "cccccccc-2222-2222-2222-222222222222"
+    _seed(sid_pwd, str(tmp_path))
+    r = _run_current({"PWD": str(tmp_path), "CLAUDE_SESSION_ID": sid_env})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid_env
+
+
+def test_current_exact_cwd_match(tmp_path):
+    sid = "cccccccc-3333-3333-3333-333333333333"
+    _seed(sid, str(tmp_path))
+    r = _run_current({"PWD": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid
+
+
+def test_current_exact_match_most_recent_wins(tmp_path):
+    sid_old = "cccccccc-4444-4444-4444-444444444444"
+    sid_new = "cccccccc-5555-5555-5555-555555555555"
+    _seed(sid_old, str(tmp_path), ts="2025-01-01T00:00:00Z")
+    _seed(sid_new, str(tmp_path), ts="2025-06-01T00:00:00Z")
+    r = _run_current({"PWD": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid_new
+
+
+def test_current_ancestor_match_pwd_is_subdir_of_registered_cwd(tmp_path):
+    """Regression: Claude cd'd into a subdir, so $PWD is deeper than cwd."""
+    parent = tmp_path / "project"
+    child = parent / "subdir"
+    child.mkdir(parents=True)
+    sid = "cccccccc-6666-6666-6666-666666666666"
+    _seed(sid, str(parent))
+    r = _run_current({"PWD": str(child)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid
+
+
+def test_current_ancestor_match_registered_cwd_is_subdir_of_pwd(tmp_path):
+    """Reverse: the registered cwd is deeper than $PWD."""
+    parent = tmp_path / "project"
+    child = parent / "subdir"
+    child.mkdir(parents=True)
+    sid = "cccccccc-7777-7777-7777-777777777777"
+    _seed(sid, str(child))
+    r = _run_current({"PWD": str(parent)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid
+
+
+def test_current_ancestor_deepest_wins(tmp_path):
+    """Two ancestor candidates — the deeper registered cwd wins."""
+    shallow = tmp_path / "a"
+    deep = shallow / "b"
+    pwd = deep / "c"
+    pwd.mkdir(parents=True)
+    sid_shallow = "cccccccc-8888-8888-8888-888888888881"
+    sid_deep = "cccccccc-8888-8888-8888-888888888882"
+    # Make the shallow record more recent to prove depth beats recency.
+    _seed(sid_shallow, str(shallow), ts="2025-06-01T00:00:00Z")
+    _seed(sid_deep, str(deep), ts="2025-01-01T00:00:00Z")
+    r = _run_current({"PWD": str(pwd)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid_deep
+
+
+def test_current_exact_match_beats_ancestor(tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    sid_anc = "cccccccc-9999-9999-9999-999999999991"
+    sid_exact = "cccccccc-9999-9999-9999-999999999992"
+    _seed(sid_anc, str(tmp_path), ts="2025-06-01T00:00:00Z")
+    _seed(sid_exact, str(parent), ts="2025-01-01T00:00:00Z")
+    r = _run_current({"PWD": str(parent)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid_exact
+
+
+def test_current_ignores_archived(tmp_path):
+    sid = "cccccccc-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
+    _seed(sid, str(tmp_path), archived=True)
+    r = _run_current({"PWD": str(tmp_path)})
+    assert r.returncode == 1
+    assert "no current session" in r.stderr
+
+
+def test_current_no_match_exits_1(tmp_path):
+    # An unrelated directory outside any registered cwd tree.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    sid = "cccccccc-bbbb-bbbb-bbbb-bbbbbbbbbbb1"
+    _seed(sid, str(tmp_path / "unrelated"))
+    r = _run_current({"PWD": str(other)})
+    assert r.returncode == 1
+    assert "no current session" in r.stderr
+
+
+def test_current_resolves_symlinked_pwd(tmp_path):
+    """$PWD is a symlink whose realpath matches the registered cwd."""
+    real = tmp_path / "real-project"
+    real.mkdir()
+    link = tmp_path / "link-project"
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unsupported on this platform")
+    sid = "cccccccc-cccc-cccc-cccc-ccccccccccc1"
+    _seed(sid, str(real))
+    r = _run_current({"PWD": str(link)})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid
+
+
+def test_current_trailing_slash_variance(tmp_path):
+    sid = "cccccccc-dddd-dddd-dddd-ddddddddddd1"
+    _seed(sid, str(tmp_path) + "/")  # registered with trailing slash
+    r = _run_current({"PWD": str(tmp_path)})  # pwd without
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sid
