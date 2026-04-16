@@ -125,15 +125,18 @@ def test_tooltip_content_returns_formatted_lines():
     r["done_at"] = "2026-04-16T10:30:00.000000Z"
     r["first_user_prompt"] = "Please fix the login page auth"
     r["last_user_prompt"] = "Now handle the edge case for expired tokens"
+    r["last_assistant_summary"] = "Fixed the token expiry handler"
     registry.write(r)
 
     lines = watch._tooltip_lines(r, width=60)
     assert any("2026-04-14" in l for l in lines), "created_at date missing"
     assert any("2026-04-16" in l for l in lines), "done_at date missing"
-    assert any(l.startswith("S ") for l in lines), "S line missing"
+    assert any(l.startswith("SP ") for l in lines), "SP line missing"
     assert any("login page auth" in l for l in lines), "first_user_prompt missing"
-    assert any(l.startswith("E ") for l in lines), "E line missing"
+    assert any(l.startswith("EP ") for l in lines), "EP line missing"
     assert any("expired tokens" in l for l in lines), "last_user_prompt missing"
+    assert any(l.startswith("ER ") for l in lines), "ER line missing"
+    assert any("token expiry handler" in l for l in lines), "last_assistant_summary missing"
 
 
 def test_tooltip_content_omits_done_when_none():

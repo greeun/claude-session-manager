@@ -337,22 +337,23 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
 
     Layout::
 
-        S first prompt
-        E last prompt (up to 2 lines)
+        SP first prompt
+        EP last prompt (up to 2 lines)
+        ER last assistant response
         ◷ 2026-04-14  │  ✔ 2026-04-16
     """
     inner = max(10, width - 4)  # 2 border + 1 padding each side
     lines: list[str] = []
 
-    # Line 1: first prompt (always shown)
+    # SP: first prompt (always shown)
     fp = (rec.get("first_user_prompt") or "").strip().replace("\n", " ")
     if fp:
-        lines.append(_truncate(f"S {fp}", inner))
+        lines.append(_truncate(f"SP {fp}", inner))
 
-    # Last prompt: always 2 lines (E line + continuation)
+    # EP: last prompt (up to 2 lines)
     lup = (rec.get("last_user_prompt") or "").strip().replace("\n", " ")
     if lup:
-        label = "E "
+        label = "EP "
         max_chars = inner - len(label)
         from unicodedata import east_asian_width
         cut = len(lup)
@@ -365,7 +366,12 @@ def _tooltip_lines(rec: dict, width: int) -> list[str]:
             used += cw
         lines.append(_truncate(f"{label}{lup[:cut]}", inner))
         rest = lup[cut:]
-        lines.append(_truncate(f"  {rest}", inner) if rest else "")
+        lines.append(_truncate(f"   {rest}", inner) if rest else "")
+
+    # ER: last assistant response
+    lar = (rec.get("last_assistant_summary") or "").strip().replace("\n", " ")
+    if lar:
+        lines.append(_truncate(f"ER {lar}", inner))
 
     # Last line: dates
     created = (rec.get("created_at") or "")[:10]  # YYYY-MM-DD
