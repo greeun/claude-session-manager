@@ -28,6 +28,7 @@ PROGRESS_FIELDS = (
     "last_user_prompt",
     "last_assistant_summary",
     "current_task_hint",
+    "first_user_prompt",
 )
 
 
@@ -109,6 +110,7 @@ def new_record(session_id: str, **overrides: Any) -> dict[str, Any]:
         "last_user_prompt": "",
         "last_assistant_summary": "",
         "current_task_hint": "",
+        "first_user_prompt": "",
         "terminal": {
             "app": None,
             "window_id": None,
@@ -118,6 +120,7 @@ def new_record(session_id: str, **overrides: Any) -> dict[str, Any]:
         "auto_detected": True,
         "archived": False,
         "archived_at": None,
+        "done_at": None,
     }
     rec.update(overrides)
     return rec
@@ -217,6 +220,12 @@ def update(session_id: str, **fields: Any) -> dict[str, Any] | None:
         rec[k] = v
     if any(k in USER_OWNED_FIELDS for k in fields):
         rec["auto_detected"] = False
+    # Auto-set done_at when status transitions to/from done.
+    if "status" in fields:
+        if fields["status"] == "done" and not rec.get("done_at"):
+            rec["done_at"] = _utc_now_iso()
+        elif fields["status"] != "done":
+            rec["done_at"] = None
     write(rec)
     return rec
 

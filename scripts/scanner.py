@@ -296,15 +296,17 @@ def _extract_text(msg_content: Any) -> str | None:
     return None
 
 
-def _seed_from_jsonl(path: Path) -> tuple[str | None, str | None]:
-    """Return ``(title_seed, cwd_seed)`` from a transcript file.
+def _seed_from_jsonl(path: Path) -> tuple[str | None, str | None, str | None]:
+    """Return ``(title_seed, cwd_seed, first_user_prompt)`` from a transcript file.
 
     ``title_seed`` is the first user message's text trimmed to 60 chars,
     or ``None`` if none available. ``cwd_seed`` is the first line's
-    ``cwd`` field if present.
+    ``cwd`` field if present. ``first_user_prompt`` is the first user
+    message's text trimmed to 200 chars, or ``None`` if none available.
     """
     title_seed: str | None = None
     cwd_seed: str | None = None
+    first_prompt: str | None = None
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -328,12 +330,14 @@ def _seed_from_jsonl(path: Path) -> tuple[str | None, str | None]:
                     else:
                         txt = _extract_text(row.get("content"))
                     if txt:
-                        title_seed = txt.strip().splitlines()[0][:60]
+                        first_line = txt.strip().splitlines()[0]
+                        title_seed = first_line[:60]
+                        first_prompt = first_line[:200]
                 if title_seed is not None and cwd_seed is not None:
                     break
     except OSError:
         pass
-    return title_seed, cwd_seed
+    return title_seed, cwd_seed, first_prompt
 
 
 def _mtime_iso(path: Path) -> str:
@@ -377,7 +381,7 @@ def scan_once() -> dict[str, int]:
                 # Non-uuid filenames are silently skipped.
                 continue
             scanned += 1
-            title_seed, cwd_seed = _seed_from_jsonl(jf)
+            title_seed, cwd_seed, first_prompt = _seed_from_jsonl(jf)
             mtime = _mtime_iso(jf)
 
             existing = registry_read(stem)
@@ -387,6 +391,8 @@ def scan_once() -> dict[str, int]:
                 rec["project_name"] = project_name
                 rec["last_activity_at"] = mtime
                 rec["title"] = title_seed or (project_name or "")
+                if first_prompt:
+                    rec["first_user_prompt"] = first_prompt
                 # Fresh record has no prior progress; extract and store.
                 prog = _extract_progress(jf, cwd_seed)
                 if prog is not None:
@@ -416,6 +422,11 @@ def scan_once() -> dict[str, int]:
             # cwd is a context field (not user-owned) but we only fill when empty.
             if (existing.get("cwd") in (None, "")) and cwd_seed:
                 existing["cwd"] = cwd_seed
+                changed = True
+
+            # first_user_prompt is set once and never overwritten.
+            if not existing.get("first_user_prompt") and first_prompt:
+                existing["first_user_prompt"] = first_prompt
                 changed = True
 
             # Progress extraction. Apply "fresher wins" rule per §2.2
