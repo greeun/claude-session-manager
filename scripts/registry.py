@@ -116,6 +116,7 @@ def new_record(session_id: str, **overrides: Any) -> dict[str, Any]:
             "window_id": None,
             "tab_id": None,
             "tty": None,
+            "pid": None,
         },
         "auto_detected": True,
         "archived": False,
