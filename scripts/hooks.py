@@ -106,40 +106,54 @@ def _terminal_capture() -> dict[str, Any]:
                 tty = os.ttyname(_fh.fileno())
         except OSError:
             pass
-    if tty is None:
-        # Claude Code spawns hooks without a controlling TTY, so stdin/
-        # stdout/stderr and /dev/tty all fail. Walk up the parent chain
-        # via a single ps snapshot — the `claude` ancestor still has the
-        # real tty. One subprocess call instead of up to 12.
+    # The controlling-tty probe sometimes yields the literal "/dev/tty"
+    # (every process's /dev/tty resolves to a different real tty at
+    # runtime), which is not a stable per-session identifier. Treat it
+    # as missing so the ps walk below can find the concrete device.
+    if tty == "/dev/tty":
+        tty = None
+
+    # Walk up the parent chain via one ps snapshot. Two reasons:
+    # (1) When Claude Code spawns hooks without a controlling TTY the
+    #     direct probes above all fail — the first ancestor with a real
+    #     tty is the shell or terminal emulator.
+    # (2) Even when tty was found directly, we want the pid of the
+    #     terminal ancestor so ``csm watch`` can decide whether the
+    #     window is still open by probing pid liveness (cheaper and
+    #     more accurate than enumerating OS window titles).
+    anchor_pid: int | None = None
+    try:
         import subprocess as _sp
-        try:
-            r = _sp.run(
-                ["ps", "-A", "-o", "pid=,ppid=,tty="],
-                capture_output=True, text=True, timeout=2,
-            )
-            table: dict[int, tuple[int, str]] = {}
-            for line in (r.stdout or "").splitlines():
-                parts = line.split(None, 2)
-                if len(parts) < 3:
-                    continue
-                pid_s, ppid_s, tty_s = parts[0], parts[1], parts[2].strip()
-                if not pid_s.isdigit() or not ppid_s.isdigit():
-                    continue
-                table[int(pid_s)] = (int(ppid_s), tty_s)
-            pid = os.getpid()
-            for _ in range(24):
-                entry = table.get(pid)
-                if not entry:
-                    break
-                ppid, tty_s = entry
-                if tty_s and tty_s not in ("?", "??", "-"):
+        r = _sp.run(
+            ["ps", "-A", "-o", "pid=,ppid=,tty="],
+            capture_output=True, text=True, timeout=2,
+        )
+        table: dict[int, tuple[int, str]] = {}
+        for line in (r.stdout or "").splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            pid_s, ppid_s, tty_s = parts[0], parts[1], parts[2].strip()
+            if not pid_s.isdigit() or not ppid_s.isdigit():
+                continue
+            table[int(pid_s)] = (int(ppid_s), tty_s)
+        cur = os.getpid()
+        for _ in range(24):
+            entry = table.get(cur)
+            if not entry:
+                break
+            ppid, tty_s = entry
+            if tty_s and tty_s not in ("?", "??", "-"):
+                anchor_pid = cur
+                if tty is None:
                     tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
-                    break
-                if ppid <= 1:
-                    break
-                pid = ppid
-        except (_sp.SubprocessError, OSError):
-            pass
+                break
+            if ppid <= 1:
+                break
+            cur = ppid
+    except (_sp.SubprocessError, OSError):
+        pass
+
     window_id: str | None = None
     extra: dict[str, Any] = {}
     # WezTerm.
@@ -164,6 +178,7 @@ def _terminal_capture() -> dict[str, Any]:
         "window_id": window_id,
         "tab_id": None,
         "tty": tty,
+        "pid": anchor_pid,
         **extra,
     }
 
