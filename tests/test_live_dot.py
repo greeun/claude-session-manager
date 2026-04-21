@@ -91,6 +91,46 @@ def test_live_dot_skips_rows_with_question_tty(monkeypatch):
     assert live == {"/dev/ttys099"}
 
 
+def test_is_live_tty_match_requires_captured_pid_alive(monkeypatch):
+    # Regression: macOS recycles tty numbers. A closed session's record
+    # keeps tty=/dev/ttys003; if a *different* live claude later binds
+    # the same tty, is_live() must not falsely mark the old record ●.
+    import windows
+
+    rec = _make_record("/dev/ttys003")
+    rec["terminal"]["pid"] = 99999  # stored, but we control _pid_alive below
+    live = {"/dev/ttys003"}
+
+    # Captured pid is dead → the tty match is stale (recycled tty).
+    monkeypatch.setattr(windows, "_pid_alive", lambda pid: False)
+    assert livedot.is_live(rec, live) is False
+
+    # Captured pid is alive → tty match is real.
+    monkeypatch.setattr(windows, "_pid_alive", lambda pid: True)
+    assert livedot.is_live(rec, live) is True
+
+
+def test_is_live_tty_fallback_no_pid_legacy_record(monkeypatch):
+    # Pre-0.4.3 records have tty but no pid. Preserve old behavior for
+    # those — match on tty alone.
+    rec = _make_record("/dev/ttys003")
+    rec["terminal"].pop("pid", None)
+    assert livedot.is_live(rec, {"/dev/ttys003"}) is True
+
+
+def test_is_live_sid_map_bypasses_pid_check(monkeypatch):
+    # claude --resume <sid> argv match is authoritative — don't second-
+    # guess it with a pid probe. The resumed session's stored pid may
+    # not have been refreshed yet.
+    import windows
+
+    rec = _make_record(None)
+    rec["terminal"]["pid"] = 99999
+    monkeypatch.setattr(windows, "_pid_alive", lambda pid: False)
+    sid_map = {SID_A: "/dev/ttys010"}
+    assert livedot.is_live(rec, set(), sid_map) is True
+
+
 def test_live_dot_skips_malformed_pid(monkeypatch):
     blob = (
         "not a valid row\n"

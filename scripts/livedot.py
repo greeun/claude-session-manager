@@ -165,8 +165,11 @@ def is_live(
     Preference order:
     1. ``sid_map[session_id]`` — tty discovered from ``claude --resume``
        argv (authoritative; survives window changes).
-    2. ``record['terminal']['tty']`` in ``live_set`` — fallback for
-       freshly started sessions with no sid in argv.
+    2. ``record['terminal']['tty']`` in ``live_set`` **and** the
+       captured terminal pid is still alive — fallback for freshly
+       started sessions with no sid in argv. The pid gate prevents
+       macOS tty-number recycling (``/dev/ttys003`` rebound to a new
+       terminal) from falsely reviving a closed session.
     """
     if sid_map:
         sid = record.get("session_id")
@@ -176,4 +179,10 @@ def is_live(
     tty = term.get("tty")
     if not tty:
         return False
-    return tty in set(live_set)
+    if tty not in set(live_set):
+        return False
+    pid = term.get("pid")
+    if pid is None:
+        return True
+    from windows import _pid_alive
+    return _pid_alive(pid)
