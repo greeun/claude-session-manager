@@ -113,46 +113,85 @@ def _terminal_capture() -> dict[str, Any]:
     if tty == "/dev/tty":
         tty = None
 
-    # Walk up the parent chain via one ps snapshot. Two reasons:
-    # (1) When Claude Code spawns hooks without a controlling TTY the
-    #     direct probes above all fail — the first ancestor with a real
-    #     tty is the shell or terminal emulator.
-    # (2) Even when tty was found directly, we want the pid of the
-    #     terminal ancestor so ``csm watch`` can decide whether the
-    #     window is still open by probing pid liveness (cheaper and
-    #     more accurate than enumerating OS window titles).
+    # Primary: POSIX session leader (``getsid(0)``) — the shell that
+    # owns this terminal. forkpty() in the terminal emulator calls
+    # setsid() for the shell child, so the session id equals the
+    # shell's pid and stays alive for the full lifetime of the
+    # terminal window. This is the stable anchor ``csm watch`` needs
+    # to answer "is this session's window still open?".
+    #
+    # An earlier implementation walked the parent chain and stopped
+    # at the first tty-owning process. That turned out to latch onto
+    # the *hook* itself (which inherits claude's tty), and the hook
+    # exits the instant it finishes running — every stored pid was
+    # dead milliseconds later.
     anchor_pid: int | None = None
     try:
-        import subprocess as _sp
-        r = _sp.run(
-            ["ps", "-A", "-o", "pid=,ppid=,tty="],
-            capture_output=True, text=True, timeout=2,
-        )
-        table: dict[int, tuple[int, str]] = {}
-        for line in (r.stdout or "").splitlines():
-            parts = line.split(None, 2)
-            if len(parts) < 3:
-                continue
-            pid_s, ppid_s, tty_s = parts[0], parts[1], parts[2].strip()
-            if not pid_s.isdigit() or not ppid_s.isdigit():
-                continue
-            table[int(pid_s)] = (int(ppid_s), tty_s)
-        cur = os.getpid()
-        for _ in range(24):
-            entry = table.get(cur)
-            if not entry:
-                break
-            ppid, tty_s = entry
-            if tty_s and tty_s not in ("?", "??", "-"):
-                anchor_pid = cur
-                if tty is None:
-                    tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
-                break
-            if ppid <= 1:
-                break
-            cur = ppid
-    except (_sp.SubprocessError, OSError):
+        sid = os.getsid(0)
+        # sid == our own pid means the hook itself is the session
+        # leader (Claude Code spawned us with start_new_session=True,
+        # or similar). That's not the shell — fall through to the
+        # parent walk.
+        if isinstance(sid, int) and sid > 1 and sid != os.getpid():
+            anchor_pid = sid
+    except (OSError, AttributeError):
         pass
+
+    # Secondary: parent-chain walk, but skip self (the hook is always
+    # short-lived) and follow same-tty ancestors to the oldest one
+    # sharing our tty — that is the shell. Only used when getsid()
+    # gave us nothing useful, and also to fill in ``tty`` when the
+    # fd-based probe above failed.
+    if anchor_pid is None or tty is None:
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["ps", "-A", "-o", "pid=,ppid=,tty="],
+                capture_output=True, text=True, timeout=2,
+            )
+            table: dict[int, tuple[int, str]] = {}
+            for line in (r.stdout or "").splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid_s, ppid_s, tty_s = parts[0], parts[1], parts[2].strip()
+                if not pid_s.isdigit() or not ppid_s.isdigit():
+                    continue
+                table[int(pid_s)] = (int(ppid_s), tty_s)
+
+            # Walk up tracking the oldest ancestor that still shares
+            # our tty. Start from our parent (skip self — short-lived)
+            # and stop when the tty changes or disappears (that's the
+            # terminal emulator, which typically has tty="?").
+            self_entry = table.get(os.getpid())
+            cur = self_entry[0] if self_entry else 0
+            target_tty: str | None = None
+            last_same_tty_pid: int | None = None
+            for _ in range(24):
+                if cur <= 1:
+                    break
+                entry = table.get(cur)
+                if not entry:
+                    break
+                ppid, tty_s = entry
+                has_tty = bool(tty_s) and tty_s not in ("?", "??", "-")
+                if has_tty:
+                    if target_tty is None:
+                        target_tty = tty_s
+                        if tty is None:
+                            tty = tty_s if tty_s.startswith("/dev/") else f"/dev/{tty_s}"
+                    if tty_s == target_tty:
+                        last_same_tty_pid = cur
+                    else:
+                        break
+                else:
+                    if last_same_tty_pid is not None:
+                        break
+                cur = ppid
+            if anchor_pid is None and last_same_tty_pid is not None:
+                anchor_pid = last_same_tty_pid
+        except (_sp.SubprocessError, OSError):
+            pass
 
     window_id: str | None = None
     extra: dict[str, Any] = {}

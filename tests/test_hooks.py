@@ -195,6 +195,31 @@ def test_activity_hook_does_not_write_assistant_summary_or_task_hint(monkeypatch
     assert r["current_task_hint"] == ""
 
 
+def test_terminal_capture_anchors_to_session_leader(monkeypatch):
+    # Regression: the previous parent-chain walk stopped at the hook
+    # itself (first tty-owning pid in the chain), and the hook exited
+    # milliseconds later — leaving every stored ``terminal.pid`` dead.
+    # The new capture uses ``os.getsid(0)``, which is the shell's pid
+    # (session leader) and stays alive for the lifetime of the window.
+    fake_sid = 424242
+    fake_self = os.getpid()
+    monkeypatch.setattr(hook_mod.os, "getsid", lambda _pid: fake_sid)
+    term = hook_mod._terminal_capture()
+    assert term["pid"] == fake_sid
+    assert term["pid"] != fake_self
+
+
+def test_terminal_capture_rejects_self_as_session_leader(monkeypatch):
+    # If Claude Code ever spawns the hook with ``start_new_session``,
+    # ``getsid(0)`` returns our own pid — useless as a window anchor.
+    # The capture must fall through to the parent-walk fallback in
+    # that case (which may itself yield None in this unit test).
+    my_pid = os.getpid()
+    monkeypatch.setattr(hook_mod.os, "getsid", lambda _pid: my_pid)
+    term = hook_mod._terminal_capture()
+    assert term["pid"] != my_pid
+
+
 def test_activity_hook_on_unknown_session_id(monkeypatch):
     _clear_env(monkeypatch)
     assert registry.read(SID_A) is None
