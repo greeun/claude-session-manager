@@ -1,3 +1,27 @@
 scripts/__pycache__/
 tests/__pycache__/
 .claude/
+
+# superpowers (auto-installed; do not track)
+.superpowers/
+docs/superpowers/
+
+# >>> skill-build-leftovers (untracked; do not commit)
+_brainstorm-design.md critique.md generator_report.md spec.md sprint_1_contract.md sprint_2_contract.md sprint_contract.md
+# <<< skill-build-leftovers
+
+# >>> skill-artifacts (auto; do not commit skill-generated output)
+.DS_Store
+/runs/
+/output/
+/outputs/
+/out/
+/generated/
+/.tmp/
+/tmp/
+__pycache__/
+.pytest_cache/
+*-run/
+*-runs/
+*-output/
+# <<< skill-artifacts
