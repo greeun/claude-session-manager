@@ -83,6 +83,8 @@ def _apply(rec: dict, choice: str) -> None:
     if choice == "done":
         rec["status"] = "done"
         rec["auto_detected"] = False
+        if not rec.get("done_at"):
+            rec["done_at"] = registry._utc_now_iso()
         registry.write(rec)
         return
     if choice == "archive":

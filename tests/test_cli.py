@@ -57,6 +57,16 @@ def test_done_visible_archive_hidden():
     assert _run(["list", "--all"]).stdout.count(sid[:8]) == 1
 
 
+def test_done_sets_done_at():
+    # `csm done` must stamp done_at, matching `csm set --status done`.
+    sid = "44444444-4444-4444-4444-444444444444"
+    registry.write(registry.new_record(sid, title="T"))
+    _run(["done", sid]).check_returncode()
+    r = registry.read(sid)
+    assert r["status"] == "done"
+    assert r["done_at"]
+
+
 def test_list_sort_order_high_medium_low_then_recency():
     # Direct registry seeding with deterministic timestamps.
     def seed(sid: str, pri: str, ts: str, title: str):

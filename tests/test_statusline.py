@@ -82,3 +82,25 @@ def test_statusline_does_not_invoke_subprocess(monkeypatch):
     # Must succeed.
     rc = sl.run()
     assert rc == 0
+
+
+def test_parse_ts_accepts_microsecond_and_second_precision():
+    # registry writes µs precision (…S.%fZ). A seconds-only parser
+    # returned None for every real timestamp — regression guard.
+    micro = sl._parse_ts("2026-04-14T15:03:27.041923Z")
+    sec = sl._parse_ts("2026-04-14T15:03:27Z")
+    assert micro is not None and sec is not None
+    assert micro.microsecond == 41923
+    assert sec.microsecond == 0
+
+
+def test_statusline_detects_stale_with_microsecond_timestamp(capsys):
+    aged = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=5)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    r = registry.new_record("11111111-2222-3333-4444-555555555555")
+    r["last_activity_at"] = aged
+    registry.write(r)
+    sl.run()
+    out = capsys.readouterr().out.rstrip("\n")
+    assert out == "\U0001f4cb 1 pending · 1 stale  →  /tasks"

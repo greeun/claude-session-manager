@@ -59,6 +59,8 @@ def test_review_stale_done_flips_status():
     r = registry.read(SID_1)
     assert r["status"] == "done"
     assert r["auto_detected"] is False
+    # done must stamp done_at, matching `csm set --status done`.
+    assert r["done_at"]
 
 
 def test_review_stale_archive_sets_archived_at():

@@ -408,6 +408,8 @@ def cmd_done(args: argparse.Namespace) -> int:
                 rec["cwd"] = cwd_seed
     rec["status"] = "done"
     rec["auto_detected"] = False
+    if not rec.get("done_at"):
+        rec["done_at"] = registry._utc_now_iso()
     registry.write(rec)
     return 0
 

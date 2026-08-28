@@ -52,6 +52,19 @@ def test_gc_never_deletes_non_archived(capsys):
     assert "deleted 0" in out
 
 
+def test_gc_deletes_old_archived_with_microsecond_timestamp(capsys):
+    # registry writes µs-precision archived_at (…S.%fZ). A seconds-only
+    # parser skipped every archived record and gc deleted nothing —
+    # regression guard for the timestamp-precision mismatch.
+    old_micro = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=8)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    _seed(SID_OLD, archived=True, archived_at=old_micro)
+    rc = gc.run()
+    assert rc == 0
+    assert not registry.record_path(SID_OLD).exists()
+
+
 def test_gc_uses_archived_at_not_mtime(capsys):
     # archived_at says "old"; file mtime is brand new.
     _seed(SID_OLD, archived=True, archived_at=_iso(10))

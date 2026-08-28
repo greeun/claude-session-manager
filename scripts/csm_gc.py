@@ -32,15 +32,11 @@ def _log_warning(msg: str) -> None:
 
 
 def _parse_iso_z(ts: str) -> _dt.datetime | None:
-    if not isinstance(ts, str) or not ts:
-        return None
-    # Accept trailing Z for UTC per our standard format.
-    try:
-        return _dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=_dt.timezone.utc
-        )
-    except ValueError:
-        return None
+    # Delegate to the registry parser so both second- and
+    # microsecond-precision UTC ``...Z`` timestamps are accepted.
+    # ``archived_at`` is written at µs precision; a seconds-only parser
+    # here skipped every archived record and gc deleted nothing.
+    return registry.parse_iso_z(ts)
 
 
 def run() -> int:

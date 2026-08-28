@@ -22,14 +22,11 @@ def _stale_threshold_seconds() -> int:
 
 
 def _parse_ts(ts: str) -> _dt.datetime | None:
-    if not isinstance(ts, str) or not ts:
-        return None
-    try:
-        return _dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=_dt.timezone.utc
-        )
-    except ValueError:
-        return None
+    # Delegate to the registry parser so both second- and
+    # microsecond-precision UTC ``...Z`` timestamps are accepted.
+    # registry writes µs precision; a seconds-only parser here silently
+    # dropped every stale/live comparison.
+    return registry.parse_iso_z(ts)
 
 
 def counts() -> tuple[int, int]:
