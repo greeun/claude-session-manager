@@ -1,7 +1,7 @@
 ---
 name: claude-session-manager
 description: Track, triage, focus, and resume every concurrent Claude Code session on macOS. Use when the user asks about managing multiple Claude Code windows, listing tasks across terminals, finding which terminal window owns a session, jumping to that window, resuming a closed session, marking sessions done or stale, cleaning up archived records, or invokes the `csm` command. Trigger words include cst, claude session manager, task list, tasks, register session, task register, task priority, task focus, task resume, task statusline, stale sessions, review-stale, gc.
-version: 0.4.3
+version: 0.4.4
 ---
 
 # Claude Session Manager (`csm`)
@@ -52,7 +52,7 @@ Rerun the installer any time. It is idempotent.
 ## CLI
 
 ```
-csm --version                       # csm 0.4.3
+csm --version                       # csm 0.4.4
 
 csm list                            # multi-line: headline + ⤷ prompt + ⚙ hint
 csm list --compact                  # one line per session (CI/pipelines)
