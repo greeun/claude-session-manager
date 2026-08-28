@@ -1,17 +1,20 @@
 ---
 name: claude-session-manager
 description: Track, triage, focus, and resume every concurrent Claude Code session on macOS. Use when the user asks about managing multiple Claude Code windows, listing tasks across terminals, finding which terminal window owns a session, jumping to that window, resuming a closed session, marking sessions done or stale, cleaning up archived records, or invokes the `csm` command. Trigger words include cst, claude session manager, task list, tasks, register session, task register, task priority, task focus, task resume, task statusline, stale sessions, review-stale, gc.
+version: 0.4.3
 ---
 
 # Claude Session Manager (`csm`)
 
-Sprint 2 delivers the daily-driver surface: progress capture
+The daily-driver surface: progress capture
 (last_user_prompt / last_assistant_summary / current_task_hint),
 multi-line `csm list`, live-vs-idle dot, stale detection + triage
 wizard, short-id prefix matching, `csm focus`/`csm resume`, statusline
 command with installer wiring, macOS platform guard, `csm gc`, and a
-config file for the stale threshold. Slash commands and the `watch`
-TUI arrive in Sprint 3.
+config file for the stale threshold. The `csm watch` TUI (with
+`--pin`), the `csm current`/`csm delete` subcommands, and the
+`/tasks`, `/task-register`, `/task-set`, … slash commands (see
+`commands/`) are all implemented.
 
 ## When to use
 
@@ -46,10 +49,10 @@ The installer:
 
 Rerun the installer any time. It is idempotent.
 
-## CLI (Sprint 2)
+## CLI
 
 ```
-csm --version                       # csm 0.2.0
+csm --version                       # csm 0.4.3
 
 csm list                            # multi-line: headline + ⤷ prompt + ⚙ hint
 csm list --compact                  # one line per session (CI/pipelines)
@@ -62,12 +65,16 @@ csm set <id|prefix>  [--title ...] [--priority high|medium|low]
                      [--note ...] [--tags a,b]
 csm done    <id|prefix>
 csm archive <id|prefix>
+csm delete  <id|prefix>             # remove record + transcript(s); -f / --keep-transcript
+csm current                         # print current session id for this cwd (slash commands)
 
 csm focus   <id|prefix>             # bring terminal to front (macOS only)
 csm resume  <id|prefix>             # new window + `claude --resume <id>`
 csm gc                              # delete records archived > 7 days ago
 csm review-stale                    # interactive keep/done/archive/skip
 csm statusline                      # compact pending/stale summary
+csm watch                           # auto-refreshing TUI over the registry
+csm watch --pin                     # open the TUI in a pinned iTerm2 window (macOS)
 
 csm scan                            # scan ~/.claude/projects/, upsert drafts
 csm hook session-start              # called by Claude Code SessionStart hook
@@ -108,8 +115,10 @@ than the stored `last_activity_at` AND the extracted value differs.
 - recognised tool with no distinguishing input → bare tool name
 - otherwise: empty (no sub-row rendered)
 
-All three fields are truncated on code-point boundaries to 100 chars
-with a trailing `…` when shortened. No external AI call is ever made.
+Scanner-extracted fields are truncated on code-point boundaries to
+200 chars with a trailing `…` when shortened. The `UserPromptSubmit`
+hook truncates the `last_user_prompt` it writes to 100 chars. No
+external AI call is ever made.
 
 ## Stale threshold config
 
@@ -163,12 +172,13 @@ misbehaves).
 - `scripts/platform_macos.py` — macOS guard with test override.
 - `scripts/installer.py` — settings.json merge, statusline wiring.
 - `install.sh` — user-facing installer.
-- `tests/` — pytest suite (162 tests across 12 files).
+- `tests/` — pytest suite (218 tests across 14 files).
 
-## What is NOT in Sprint 2
+## Slash commands and watch TUI
 
-- Slash commands (`/tasks`, `/task-register`, etc.).
-- `csm watch` TUI.
-- `csm watch --pin` dedicated window.
-
-These arrive in Sprint 3.
+- Slash commands live in `commands/` (`/tasks`, `/task-register`,
+  `/task-set`, `/task-status`, `/task-priority`, `/task-note`,
+  `/task-focus`, `/task-done`, `/done`). They shell out to `csm`,
+  using `csm current` to resolve the session for the current cwd.
+- `csm watch` is an auto-refreshing TUI over the registry;
+  `csm watch --pin` opens it in a pinned iTerm2 window (macOS).

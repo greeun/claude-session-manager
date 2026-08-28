@@ -38,8 +38,8 @@ was closed.
 - **Statusline integration** — compact pending/stale summary in the Claude Code
   statusline.
 - **Slash commands** — `/tasks`, `/task-register`, `/task-focus`, `/task-done`,
-  `/done`, `/task-priority`, `/task-note`, `/task-status` work from inside any
-  Claude Code session.
+  `/done`, `/task-set`, `/task-priority`, `/task-note`, `/task-status` work from
+  inside any Claude Code session.
 
 ## Requirements
 
@@ -105,6 +105,8 @@ csm set <id> [--title ...] [--priority high|medium|low]
             [--note ...] [--tags a,b]
 csm done    <id>                    mark done
 csm archive <id>                    archive (hidden from default list)
+csm delete  <id> [-f|--force]       permanently delete record + transcript(s)
+                 [--keep-transcript]
 
 csm focus   <id>                    bring terminal window to front (macOS)
 csm resume  <id>                    new window running `claude --resume <id>`
@@ -138,6 +140,7 @@ Available inside any Claude Code session (installed automatically):
 | `/tasks` | List all tracked sessions |
 | `/task-register` | Register the current session with title and priority |
 | `/task-focus <id>` | Focus another session's terminal window |
+| `/task-set <field> <value>` | Set `title`/`status`/`priority`/`note` on the current session |
 | `/task-priority <level>` | Set priority on the current session |
 | `/task-status <status>` | Set status on the current session |
 | `/task-note <text>` | Attach a note to the current session |
@@ -202,7 +205,7 @@ Code itself.
 
 | Subcommand | macOS | Linux | Windows |
 |---|---|---|---|
-| `list`, `set`, `done`, `archive`, `scan`, `statusline`, `gc`, `review-stale`, `watch` | ✓ | ✓ | ✓ |
+| `list`, `set`, `done`, `archive`, `delete`, `current`, `scan`, `statusline`, `gc`, `review-stale`, `watch` | ✓ | ✓ | ✓ |
 | `focus` | ✓ | ✓ (X11/Wayland via title match) | exit 6 |
 | `resume` | ✓ | ✓ (WezTerm/Kitty only) | exit 6 |
 

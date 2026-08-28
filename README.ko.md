@@ -25,7 +25,7 @@ Claude Code 창이 3개 프로젝트에 걸쳐 5개 떠 있을 때, `csm` 명령
 - **Stale 감지** — 설정된 임계치(기본 4시간) 이상 활동 없는 세션을 표시. `csm review-stale`이 keep/done/archive를 하나씩 묻는다.
 - **크로스 터미널 focus & resume** — `csm focus <id>`는 순서대로 시도: tmux IPC → 네이티브 IPC(iTerm2 / Terminal.app AppleScript, WezTerm `wezterm cli`, Kitty `kitty @`) → 제목 마커 매칭(macOS System Events, X11 `wmctrl` / `xdotool`, Wayland `swaymsg`). `csm resume <id>`는 가용한 터미널에서 새 창을 연다.
 - **Statusline 통합** — Claude Code 하단 상태바에 pending/stale 요약 표시.
-- **슬래시 명령** — `/tasks`, `/task-register`, `/task-focus`, `/task-done`, `/done`, `/task-priority`, `/task-note`, `/task-status`가 어떤 Claude Code 세션 안에서든 동작한다.
+- **슬래시 명령** — `/tasks`, `/task-register`, `/task-focus`, `/task-done`, `/done`, `/task-set`, `/task-priority`, `/task-note`, `/task-status`가 어떤 Claude Code 세션 안에서든 동작한다.
 
 ## 요구 사항
 
@@ -87,6 +87,8 @@ csm set <id> [--title ...] [--priority high|medium|low]
             [--note ...] [--tags a,b]
 csm done    <id>                    done 표시
 csm archive <id>                    archive (기본 목록에서 숨김)
+csm delete  <id> [-f|--force]       레코드 + 트랜스크립트 영구 삭제
+                 [--keep-transcript]
 
 csm focus   <id>                    창 앞으로
 csm resume  <id>                    새 창에서 `claude --resume <id>` 실행
@@ -120,6 +122,7 @@ csm --version
 | `/tasks` | 추적 중인 세션 목록 |
 | `/task-register` | 현재 세션에 제목/우선순위 등록 |
 | `/task-focus <id>` | 다른 세션 창으로 이동 |
+| `/task-set <field> <value>` | 현재 세션의 `title`/`status`/`priority`/`note` 설정 |
 | `/task-priority <level>` | 현재 세션 우선순위 설정 |
 | `/task-status <status>` | 현재 세션 상태 설정 |
 | `/task-note <text>` | 현재 세션에 메모 |
@@ -190,7 +193,7 @@ csm focus / resume             AppleScript / terminal CLI로 창 제어
 
 | 서브명령 | macOS | Linux | Windows |
 |---|---|---|---|
-| `list`, `set`, `done`, `archive`, `scan`, `statusline`, `gc`, `review-stale`, `watch` | ✓ | ✓ | ✓ |
+| `list`, `set`, `done`, `archive`, `delete`, `current`, `scan`, `statusline`, `gc`, `review-stale`, `watch` | ✓ | ✓ | ✓ |
 | `focus` | ✓ | ✓ (X11/Wayland 제목 매칭) | exit 6 |
 | `resume` | ✓ | ✓ (WezTerm/Kitty 한정) | exit 6 |
 
